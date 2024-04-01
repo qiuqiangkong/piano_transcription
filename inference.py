@@ -27,13 +27,15 @@ def inference(args):
     model_name = args.model_name
 
     # Default parameters
-    segment_seconds = 10.
+    segment_seconds = 4.
     device = "cuda"
     sample_rate = 16000
 
     # Load checkpoint
-    checkpoint_path = Path("checkpoints", model_name, "latest.pth")
+    # checkpoint_path = Path("checkpoints", model_name, "latest.pth")
     # checkpoint_path = Path("checkpoints", model_name, "epoch=100.pth")
+    # checkpoint_path = Path("checkpoints/train/CRnn3/step=90000.pth")
+    checkpoint_path = Path("checkpoints/train/CRnn3/step=60000.pth")
 
     model = get_model(model_name)
     model.load_state_dict(torch.load(checkpoint_path))

@@ -73,12 +73,24 @@ class Maestro:
         # t1 = time.time()
 
         # Load tokens.
+        '''
         string_processor = MaestroStringProcessor(
             label=False,
             onset=True,
             offset=True,
             sustain=False,
             velocity=True,
+            pedal_onset=False,
+            pedal_offset=False,
+            pedal_sustain=False,
+        )
+        '''
+        string_processor = MaestroStringProcessor(
+            label=False,
+            onset=True,
+            offset=False,
+            sustain=False,
+            velocity=False,
             pedal_onset=False,
             pedal_offset=False,
             pedal_sustain=False,
@@ -90,8 +102,6 @@ class Maestro:
             string_processor=string_processor
         )
         # shape: (tokens_num,)
-
-        # librosa.get_samplerate(audio_path)
 
         data = {
             "audio_path": audio_path,
@@ -306,7 +316,7 @@ class MaestroStringProcessor:
 
                 event[key] = value
 
-            if w == "<eos>":
+            if w == "<eos>" and event is not None:
                 events.append(event)
                 break
                 
@@ -358,14 +368,14 @@ class MaestroStringProcessor:
 
     def append_label(self, strings, lab):
         
-        if self.label is not None:
+        if self.label:
             strings.append("label={}".format(lab))
 
         return strings
 
     def append_velocity(self, strings, vel):
         
-        if self.velocity is not None:
+        if self.velocity:
             strings.append("velocity={}".format(vel))
 
         return strings

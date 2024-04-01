@@ -26,11 +26,12 @@ def train(args):
     # Default parameters
     device = "cuda"
     batch_size = 16
-    num_workers = 16
+    num_workers = 32
     save_step_frequency = 2000
     training_steps = 100000
     debug = False
     filename = Path(__file__).stem
+    segment_seconds = 4.
 
     checkpoints_dir = Path("./checkpoints", filename, model_name)
     
@@ -42,7 +43,7 @@ def train(args):
     dataset = Maestro(
         root=root,
         split="train",
-        segment_seconds=10.,
+        segment_seconds=segment_seconds,
         tokenizer=tokenizer,
         max_token_len=1024,
     )

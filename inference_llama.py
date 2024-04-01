@@ -18,7 +18,10 @@ import matplotlib.pyplot as plt
 from train import get_model
 import mir_eval
 
-# from evalaute import parse_midi
+from data.tokenizers import Tokenizer
+from models.audiollama import LLaMAConfig, AudioLlama
+from data.maestro import MaestroStringProcessor
+from data.io import events_to_notes, notes_to_midi
 
 
 def inference(args):
@@ -27,20 +30,40 @@ def inference(args):
     model_name = args.model_name
 
     # Default parameters
-    segment_seconds = 10.
+    segment_seconds = 4.
     device = "cuda"
     sample_rate = 16000
+    max_token_len = 768
+    top_k = 1
+
+    tokenizer = Tokenizer()
 
     # Load checkpoint
-    # checkpoint_path = Path("checkpoints", model_name, "latest.pth")
-    # checkpoint_path = "./checkpoints/train_slakh2100/CRnn3/latest.pth"
-    # checkpoint_path = Path("checkpoints", model_name, "epoch=100.pth")
-    checkpoint_path = Path("checkpoints/train/CRnn3/step=40000.pth")
+    enc_model_name = "CRnn3"
+    checkpoint_path = Path("checkpoints/train/{}/step=90000.pth".format(enc_model_name))
+    enc_model = get_model(enc_model_name)
+    enc_model.load_state_dict(torch.load(checkpoint_path))
+    enc_model.to(device)
 
-    model = get_model(model_name)
+    for param in enc_model.parameters():
+        param.requires_grad = False
+
+    # Load checkpoint
+    checkpoint_path = Path("checkpoints/train_llama/AudioLlama/step=100000.pth")
+    config = LLaMAConfig(
+        block_size=401 + max_token_len, 
+        vocab_size=tokenizer.vocab_size, 
+        padded_vocab_size=tokenizer.vocab_size, 
+        n_layer=6, 
+        n_head=16, 
+        n_embd=1024, 
+        audio_n_embd=1024
+    )
+    model = AudioLlama(config)
     model.load_state_dict(torch.load(checkpoint_path))
     model.to(device)
 
+    # Data
     root = "/datasets/maestro-v2.0.0/maestro-v2.0.0"
     meta_csv = Path(root, "maestro-v2.0.0.csv")
     meta_data = load_meta(meta_csv, split="test")
@@ -56,16 +79,30 @@ def inference(args):
     output_dir = Path("pred_midis", model_name)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
+    string_processor = MaestroStringProcessor(
+        label=False,
+        onset=True,
+        offset=False,
+        sustain=False,
+        velocity=False,
+        pedal_onset=False,
+        pedal_offset=False,
+        pedal_sustain=False,
+    )
+
     precs = []
     recalls = []
     f1s = []
 
+    idx = tokenizer.stoi("<sos>")
+    idx = torch.LongTensor([[idx]]).to(device)
+
     # for audio_idx, audio_path in enumerate(audio_paths):
-    for audio_idx in range(len(audio_paths)):
+    # for audio_idx in range(len(audio_paths)):
+    for audio_idx in range(2, len(audio_paths)):
 
         print(audio_idx)
         audio_path = audio_paths[audio_idx]
-
 
         audio, _ = librosa.load(path=audio_path, sr=sample_rate, mono=True)
         # (channels_num, audio_samples)
@@ -74,39 +111,69 @@ def inference(args):
         bgn = 0
         segment_samples = int(segment_seconds * sample_rate)
 
-        onset_rolls = []
+        # onset_rolls = []
+        all_notes = []
 
         # Do separation
-        while bgn < audio_samples:
-            
-            # print("Processing: {:.1f} s".format(bgn / sample_rate))
+        while bgn + segment_samples < audio_samples:
+
+            # bgn = 136 * sample_rate
+            bgn_sec = bgn / sample_rate
+            print("Processing: {:.1f} s".format(bgn_sec))
 
             # Cut segments
             segment = audio[bgn : bgn + segment_samples]
             segment = librosa.util.fix_length(data=segment, size=segment_samples, axis=-1)
-            segment = torch.Tensor(segment).to(device)
+            segment = torch.Tensor(segment).to(device)[None, :]
+
+            with torch.no_grad():
+                enc_model.eval()
+                audio_emb = enc_model(segment)["onset_emb"]
 
             # Separate a segment
             with torch.no_grad():
                 model.eval()
-                output_dict = model(audio=segment[None, :])
-                onset_roll = output_dict["onset_roll"].cpu().numpy()[0]
-                onset_rolls.append(onset_roll[0:-1, :])
-                # sep_wavs.append(sep_wav.cpu().numpy())
+                pred_tokens = model.generate(
+                    audio_emb=audio_emb, 
+                    idx=idx, 
+                    max_new_tokens=max_token_len,
+                    top_k=top_k
+                )[0].data.cpu().numpy()
+
+                for i, token in enumerate(pred_tokens):
+                    if token == tokenizer.stoi("<eos>"):
+                        break
+
+                pred_tokens = pred_tokens[0 : i + 1]
+                    
+                # for ix in new_outputs:
+                #     print(tokenizer.itos(ix))
+
+                # from IPython import embed; embed(using=False); os._exit(0)
+                strings = tokenizer.tokens_to_strings(pred_tokens)
+                events = string_processor.strings_to_events(strings)
+                notes = events_to_notes(events)
+
+                for note in notes:
+                    note.start += bgn_sec
+                    note.end += bgn_sec
+
+                all_notes.extend(notes)
+
+                # notes_to_midi(notes, "_zz.mid")
+                # soundfile.write(file="_zz.wav", data=audio[bgn : bgn + segment_samples], samplerate=16000)
+
+                # if bgn / sample_rate > 30:
+                #     break
 
             bgn += segment_samples
 
-            # soundfile.write(file="_zz.wav", data=segment.cpu().numpy(), samplerate=sample_rate)
-
-            # plt.matshow(onset_roll.T, origin='lower', aspect='auto', cmap='jet')
-            # plt.savefig("_zz.pdf")
-
-        onset_rolls = np.concatenate(onset_rolls, axis=0)
-        # pickle.dump(onset_rolls, open("_zz.pkl", "wb"))
-
+        notes_to_midi(all_notes, "_zz.mid")
+        soundfile.write(file="_zz.wav", data=audio, samplerate=16000)
+        
         est_midi_path = Path(output_dir, "{}.mid".format(Path(audio_path).stem))
-        post_process(onset_rolls, est_midi_path)
-
+        notes_to_midi(all_notes, str(est_midi_path))
+        
         ref_midi_path = midi_paths[audio_idx]
         ref_intervals, ref_pitches = parse_midi(ref_midi_path)
         est_intervals, est_pitches = parse_midi(est_midi_path)
@@ -148,49 +215,6 @@ def load_meta(meta_csv, split):
     return meta_data
 
 
-def post_process(onset_roll, output_path):
-    # onset_roll = pickle.load(open("_zz.pkl", "rb"))
-
-    # import torch
-    # a1 = torch.Tensor(onset_roll[None, None, :, :])
-    # w = torch.Tensor(np.zeros((1, 1, 5, 5)))
-    # y = torch.nn.functional.conv2d(input=a1, weight=w, padding=2)
-    # y = y.cpu().numpy()[0, 0]
-    # plt.matshow(onset_roll[0:1000].T, origin='lower', aspect='auto', cmap='jet')
-    # plt.savefig("_zz.pdf")
-    # from IPython import embed; embed(using=False); os._exit(0)
-    
-    frames_num, pitches_num = onset_roll.shape
-
-    notes = []
-
-    array = np.stack(np.where(onset_roll > 0.3), axis=-1)
-
-    array = deduplicate_array(array)
-
-    onsets = array[:, 0] / 100
-    pitches = array[:, 1]
-
-    for onset, pitch in zip(onsets, pitches):
-        offset = onset + 0.2
-        note = {
-            "onset": onset,
-            "offset": offset,
-            "pitch": pitch
-        }
-        notes.append(note)
-
-    # Write to MIDI
-    new_midi_data = pretty_midi.PrettyMIDI()
-    new_track = pretty_midi.Instrument(program=0)
-    for note in notes:
-        midi_note = pretty_midi.Note(pitch=note["pitch"], start=note["onset"], end=note["offset"], velocity=100)
-        new_track.notes.append(midi_note)
-    new_midi_data.instruments.append(new_track)
-    new_midi_data.write(str(output_path))
-    print("Write out to {}".format(output_path))
-
-
 def parse_midi(midi_path):
 
     midi_data = pretty_midi.PrettyMIDI(str(midi_path))
@@ -211,7 +235,6 @@ def deduplicate_array(array):
 
     new_array = []
 
-
     for pair in array:
         time = pair[0]
         pitch = pair[1]
@@ -224,7 +247,7 @@ def deduplicate_array(array):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_name', type=str, default="CRnn3")
+    parser.add_argument('--model_name', type=str, default="AudioLlama")
     args = parser.parse_args()
 
     inference(args) 

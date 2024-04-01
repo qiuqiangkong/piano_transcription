@@ -110,6 +110,7 @@ class CRnn3(nn.Module):
         onset_roll = torch.sigmoid(self.onset_fc(x))
 
         output_dict = {
+            "onset_emb": x,
             "onset_roll": onset_roll
         }
 

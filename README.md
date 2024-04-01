@@ -17,10 +17,10 @@ sh env.sh
 ```
 
 # Train
-python train.py
+CUDA_VISIBLE_DEVICES=0 python train.py
 
 # Inference
-python inference.py
+CUDA_VISIBLE_DEVICES=0 python inference.py
 
 # Evaluate
-python evaluat.py
+python evaluate.py
