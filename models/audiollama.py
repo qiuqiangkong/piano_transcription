@@ -11,6 +11,7 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 from typing_extensions import Self
+import numpy as np
 
 # from kqq_models.utils import find_multiple
 
@@ -171,6 +172,34 @@ class AudioLlama(nn.Module):
             # append sampled index to the running sequence and continue
             idx = torch.cat((idx, idx_next), dim=1)
 
+
+        return idx
+
+    @torch.no_grad()
+    def generate_in_batch(self, audio_emb, idx, max_new_tokens, end_token):
+        """
+        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
+        the sequence max_new_tokens times, feeding the predictions back into the model each time.
+        Most likely you'll want to make sure to be in model.eval() mode of operation for this.
+        """
+
+        batch_size = audio_emb.shape[0]
+        finish_flags = [False] * batch_size
+
+        for i in range(max_new_tokens):
+            idx_cond = idx
+            logits, _ = self(audio_emb, idx_cond)
+            idx_next = torch.argmax(logits, dim=-1)
+            idx = torch.cat((idx, idx_next), dim=1)
+
+            for k in range(batch_size):
+                if idx_next[k, 0] == end_token:
+                    finish_flags[k] = True
+
+            if np.sum(finish_flags) == batch_size:
+                break
+
+        # print("pred tokens: {}".format(i))
 
         return idx
 

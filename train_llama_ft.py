@@ -29,6 +29,7 @@ def train(args):
     # Default parameters
     device = "cuda"
     batch_size = 16
+    # batch_size = 8
     num_workers = 32
     evaluate_step_frequency = 1000
     save_step_frequency = 2000
@@ -38,7 +39,8 @@ def train(args):
     segment_seconds = 4.
     lr = 1e-4
     max_token_len = 256
-    wandb_log = True
+    # max_token_len = 1024
+    wandb_log = False
 
     checkpoints_dir = Path("./checkpoints", filename, model_name)
     
@@ -180,7 +182,9 @@ def train(args):
         #     if wandb_log:
         #         wandb.log({"loss": loss.item()})
 
+        '''
         if step % evaluate_step_frequency == 0:
+            print("Evaluating ...")
             train_loss = validate(enc_model, model, eval_train_dataloader)
             test_loss = validate(enc_model, model, eval_test_dataloader)
             print("--- step: {} ---".format(step))
@@ -192,6 +196,7 @@ def train(args):
                     "train loss": train_loss,
                     "test loss": test_loss
                 })
+        '''
 
         # Save model
         if step % save_step_frequency == 0:

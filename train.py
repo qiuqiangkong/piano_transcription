@@ -14,8 +14,10 @@ from models.crnn import CRnn
 from tqdm import tqdm
 import museval
 import argparse
+import wandb
 
 from data.tokenizers import Tokenizer
+from losses import regress_onset_offset_frame_velocity_bce, regress_onset_offset_frame_velocity_bce2
 
 
 def train(args):
@@ -27,11 +29,15 @@ def train(args):
     device = "cuda"
     batch_size = 16
     num_workers = 32
-    save_step_frequency = 2000
-    training_steps = 100000
+    save_step_frequency = 10000
+    training_steps = 200000
     debug = False
     filename = Path(__file__).stem
     segment_seconds = 4.
+    wandb_log = True
+
+    if wandb_log:
+        wandb.init(project="mini_piano_transcription")
 
     checkpoints_dir = Path("./checkpoints", filename, model_name)
     
@@ -90,10 +96,10 @@ def train(args):
         if debug:
             play_audio(mixture, target)
 
-        optimizer.zero_grad()
+        
 
         model.train()
-        output_dict = model(audio=audio) 
+        output_dict = model(audio=audio)
 
         # fig, axs = plt.subplots(2,1, sharex=True)
         # axs[0].matshow(onsets_roll.cpu().numpy()[0].T, origin='lower', aspect='auto', cmap='jet')
@@ -102,13 +108,37 @@ def train(args):
 
         # from IPython import embed; embed(using=False); os._exit(0)
 
-        loss = bce_loss(output_dict["onset_roll"], onset_roll)
+        if model_name in ["CRnn2_onset_offset_vel"]:
+            target_dict = {
+                "onset_roll": data["onset_roll"].to(device),
+                "offset_roll": data["offset_roll"].to(device),
+                "frame_roll": data["frame_roll"].to(device),
+                "velocity_roll": data["velocity_roll"].to(device),
+            }
+            loss = regress_onset_offset_frame_velocity_bce(output_dict, target_dict)
+        
+        if model_name in ["CRnn3_onset_offset_vel"]:
+            target_dict = {
+                "onset_roll": data["onset_roll"].to(device),
+                "offset_roll": data["offset_roll"].to(device),
+                "frame_roll": data["frame_roll"].to(device),
+                "velocity_roll": data["velocity_roll"].to(device),
+            }
+            loss = regress_onset_offset_frame_velocity_bce2(output_dict, target_dict)
+
+        else:
+            loss = bce_loss(output_dict["onset_roll"], onset_roll)
+
+        optimizer.zero_grad()    
         loss.backward()
 
         optimizer.step()
 
         if step % 100 == 0:
             print("step: {}, loss: {:.3f}".format(step, loss.item()))
+
+            if wandb_log:
+                wandb.log({"train loss": loss.item()})
 
         # Save model
         if step % save_step_frequency == 0:
@@ -130,9 +160,15 @@ def get_model(model_name):
     elif model_name == "CRnn2":
         from models.crnn2 import CRnn2
         return CRnn2()
+    elif model_name == "CRnn2_onset_offset_vel":
+        from models.crnn2_onset_offset_vel import CRnn2_onset_offset_vel
+        return CRnn2_onset_offset_vel()
     elif model_name == "CRnn3":
         from models.crnn3 import CRnn3
         return CRnn3()
+    elif model_name == "CRnn3_onset_offset_vel":
+        from models.crnn3_onset_offset_vel import CRnn3_onset_offset_vel
+        return CRnn3_onset_offset_vel()
     else:
         raise NotImplementedError
 

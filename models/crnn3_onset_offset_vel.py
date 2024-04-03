@@ -46,20 +46,9 @@ class ConvBlock(nn.Module):
         return output 
 
 
-class CRnn3(nn.Module):
+class AcousticModel(nn.Module):
     def __init__(self):
-        super(CRnn3, self).__init__()
-
-        self.mel_extractor = MelSpectrogram(
-            sample_rate=16000,
-            n_fft=2048,
-            hop_length=160,
-            f_min=30.,
-            f_max=8000,
-            n_mels=229,
-            power=2.0,
-            normalized=True,
-        )
+        super(AcousticModel, self).__init__()
 
         self.conv1 = ConvBlock(in_channels=1, out_channels=48)
         self.conv2 = ConvBlock(in_channels=48, out_channels=64)
@@ -76,7 +65,50 @@ class CRnn3(nn.Module):
             bidirectional=True
         )
 
-        self.onset_fc = nn.Linear(1024, 128)
+        self.fc = nn.Linear(1024, 128)
+        
+    def forward(self, input):
+        """
+        Args:
+          input: (batch_size, channels_num, time_steps, freq_bins)
+
+        Outputs:
+          output: (batch_size, time_steps, classes_num)
+        """
+
+        x = self.conv1(input)
+        x = self.conv2(x)
+        x = self.conv3(x)
+        x = self.conv4(x)
+        # shape: (B, C, T, Freq)
+
+        x = rearrange(x, 'b c t f -> b t (c f)')
+
+        x, _ = self.gru(x)
+
+        output = torch.sigmoid(self.fc(x))
+        return output, x
+
+
+class CRnn3_onset_offset_vel(nn.Module):
+    def __init__(self):
+        super(CRnn3_onset_offset_vel, self).__init__()
+
+        self.mel_extractor = MelSpectrogram(
+            sample_rate=16000,
+            n_fft=2048,
+            hop_length=160,
+            f_min=30.,
+            f_max=8000,
+            n_mels=229,
+            power=2.0,
+            normalized=True,
+        )
+
+        self.onset_model = AcousticModel()
+        self.offset_model = AcousticModel()
+        self.frame_model = AcousticModel()
+        self.vel_model = AcousticModel()
 
     def forward(self, audio):
         """Separation model.
@@ -96,22 +128,20 @@ class CRnn3(nn.Module):
         x = x[:, None, :, :]
         # shape: (B, 1, T, Freq)
 
-        # from IPython import embed; embed(using=False); os._exit(0)
-        x = self.conv1(x)
-        x = self.conv2(x)
-        x = self.conv3(x)
-        x = self.conv4(x)
-        # shape: (B, C, T, Freq)
-
-        x = rearrange(x, 'b c t f -> b t (c f)')
-
-        x, _ = self.gru(x)
-
-        onset_roll = torch.sigmoid(self.onset_fc(x))
+        onset_roll, onset_emb = self.onset_model(x)
+        offset_roll, offset_emb = self.offset_model(x)
+        frame_roll, frame_emb = self.frame_model(x)
+        vel_roll, vel_emb = self.vel_model(x)
 
         output_dict = {
-            "onset_emb": x,
-            "onset_roll": onset_roll
+            "onset_roll": onset_roll,
+            "offset_roll": offset_roll,
+            "frame_roll": frame_roll,
+            "velocity_roll": vel_roll,
+            "onset_emb": onset_emb,
+            "offset_emb": offset_emb,
+            "frame_emb": frame_emb,
+            "velocity_emb": vel_emb
         }
-
+        
         return output_dict

@@ -35,7 +35,8 @@ def inference(args):
     # checkpoint_path = Path("checkpoints", model_name, "latest.pth")
     # checkpoint_path = Path("checkpoints", model_name, "epoch=100.pth")
     # checkpoint_path = Path("checkpoints/train/CRnn3/step=90000.pth")
-    checkpoint_path = Path("checkpoints/train/CRnn3/step=60000.pth")
+    # checkpoint_path = Path("checkpoints/train/CRnn3/step=60000.pth")
+    checkpoint_path = Path("checkpoints/train/CRnn2_onset_offset_vel/step=20000.pth")
 
     model = get_model(model_name)
     model.load_state_dict(torch.load(checkpoint_path))
@@ -90,7 +91,11 @@ def inference(args):
             with torch.no_grad():
                 model.eval()
                 output_dict = model(audio=segment[None, :])
-                onset_roll = output_dict["onset_roll"].cpu().numpy()[0]
+
+                if model_name in ["CRnn2_onset_offset_vel"]:
+                    onset_roll = output_dict["reg_onset_output"].cpu().numpy()[0]
+                else:
+                    onset_roll = output_dict["onset_roll"].cpu().numpy()[0]
                 onset_rolls.append(onset_roll[0:-1, :])
                 # sep_wavs.append(sep_wav.cpu().numpy())
 
