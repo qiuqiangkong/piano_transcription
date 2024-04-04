@@ -58,15 +58,13 @@ class AcousticModel(nn.Module):
         self.gru = nn.GRU(
             input_size=1792, 
             hidden_size=512, 
-            num_layers=3, 
+            num_layers=2, 
             bias=True, 
             batch_first=True, 
             dropout=0., 
             bidirectional=True
         )
 
-        self.fc = nn.Linear(1024, 128)
-        
     def forward(self, input):
         """
         Args:
@@ -86,13 +84,43 @@ class AcousticModel(nn.Module):
 
         x, _ = self.gru(x)
 
-        output = torch.sigmoid(self.fc(x))
-        return output, x
+        return x
 
 
-class CRnn3_onset_offset_vel(nn.Module):
+class RollModel(nn.Module):
     def __init__(self):
-        super(CRnn3_onset_offset_vel, self).__init__()
+        super(RollModel, self).__init__()
+
+        self.gru = nn.GRU(
+            input_size=1024, 
+            hidden_size=512, 
+            num_layers=2, 
+            bias=True, 
+            batch_first=True, 
+            dropout=0., 
+            bidirectional=True
+        )
+
+        self.fc = nn.Linear(1024, 128)
+
+    def forward(self, input):
+        """
+        Args:
+          input: (batch_size, channels_num, time_steps, freq_bins)
+
+        Outputs:
+          output: (batch_size, time_steps, classes_num)
+        """
+
+        emb, _ = self.gru(input)
+        output = torch.sigmoid(self.fc(emb))
+
+        return output, emb
+
+
+class CRnn4_onset_offset_vel(nn.Module):
+    def __init__(self):
+        super(CRnn4_onset_offset_vel, self).__init__()
 
         self.mel_extractor = MelSpectrogram(
             sample_rate=16000,
@@ -105,10 +133,11 @@ class CRnn3_onset_offset_vel(nn.Module):
             normalized=True,
         )
 
-        self.onset_model = AcousticModel()
-        self.offset_model = AcousticModel()
-        self.frame_model = AcousticModel()
-        self.vel_model = AcousticModel()
+        self.acoustic_model = AcousticModel()
+        self.onset_model = RollModel()
+        self.offset_model = RollModel()
+        self.frame_model = RollModel()
+        self.vel_model = RollModel()
 
     def forward(self, audio):
         """Separation model.
@@ -128,13 +157,15 @@ class CRnn3_onset_offset_vel(nn.Module):
         x = x[:, None, :, :]
         # shape: (B, 1, T, Freq)
 
+        x = self.acoustic_model(x)
+
         onset_roll, onset_emb = self.onset_model(x)
         offset_roll, offset_emb = self.offset_model(x)
         frame_roll, frame_emb = self.frame_model(x)
         vel_roll, vel_emb = self.vel_model(x)
 
         emb = torch.cat((onset_emb, offset_emb, frame_emb, vel_emb), dim=-1)
-        
+
         output_dict = {
             "onset_roll": onset_roll,
             "offset_roll": offset_roll,

@@ -34,14 +34,15 @@ def train(args):
     debug = False
     filename = Path(__file__).stem
     segment_seconds = 4.
-    wandb_log = True
+    wandb_log = False
 
     if wandb_log:
         wandb.init(project="mini_piano_transcription")
 
     checkpoints_dir = Path("./checkpoints", filename, model_name)
     
-    root = "/datasets/maestro-v2.0.0/maestro-v2.0.0"
+    # root = "/datasets/maestro-v2.0.0/maestro-v2.0.0"
+    root = "/datasets/maestro-v3.0.0/maestro-v3.0.0"
 
     tokenizer = Tokenizer()
 
@@ -117,7 +118,7 @@ def train(args):
             }
             loss = regress_onset_offset_frame_velocity_bce(output_dict, target_dict)
         
-        if model_name in ["CRnn3_onset_offset_vel"]:
+        elif model_name in ["CRnn3_onset_offset_vel", "CRnn4_onset_offset_vel"]:
             target_dict = {
                 "onset_roll": data["onset_roll"].to(device),
                 "offset_roll": data["offset_roll"].to(device),
@@ -169,6 +170,9 @@ def get_model(model_name):
     elif model_name == "CRnn3_onset_offset_vel":
         from models.crnn3_onset_offset_vel import CRnn3_onset_offset_vel
         return CRnn3_onset_offset_vel()
+    elif model_name == "CRnn4_onset_offset_vel":
+        from models.crnn4_onset_offset_vel import CRnn4_onset_offset_vel
+        return CRnn4_onset_offset_vel()
     else:
         raise NotImplementedError
 

@@ -28,8 +28,8 @@ def train(args):
 
     # Default parameters
     device = "cuda"
-    batch_size = 16
-    # batch_size = 8
+    # batch_size = 16
+    batch_size = 10
     num_workers = 32
     evaluate_step_frequency = 1000
     save_step_frequency = 2000
@@ -38,21 +38,17 @@ def train(args):
     filename = Path(__file__).stem
     segment_seconds = 4.
     lr = 1e-4
-    max_token_len = 256
-    # max_token_len = 1024
-    wandb_log = False
+    # max_token_len = 256
+    max_token_len = 1024
+    wandb_log = True
 
     checkpoints_dir = Path("./checkpoints", filename, model_name)
     
-    # root = "/datasets/maestro-v2.0.0/maestro-v2.0.0"
     root = "/datasets/maestro-v3.0.0/maestro-v3.0.0"
 
     if wandb_log:
         wandb.init(
             project="mini_piano_transcription",
-            # config={
-            #     "architecture": "CNN",
-            # }
         )
 
     tokenizer = Tokenizer()
@@ -108,8 +104,10 @@ def train(args):
     )
 
     # Load checkpoint
-    enc_model_name = "CRnn3"
-    checkpoint_path = Path("checkpoints/train/{}/step=90000.pth".format(enc_model_name))
+    enc_model_name = "CRnn3_onset_offset_vel"
+    checkpoint_path = Path("checkpoints/train/{}/step=100000.pth".format(enc_model_name))
+    # enc_model_name = "CRnn3"
+    # checkpoint_path = Path("checkpoints/train/{}/step=90000.pth".format(enc_model_name))
     enc_model = get_model(enc_model_name)
     enc_model.load_state_dict(torch.load(checkpoint_path))
     enc_model.to(device)
@@ -130,6 +128,7 @@ def train(args):
         audio_n_embd=1024
     )
     '''
+    
     config = LLaMAConfig(
         block_size=401 + max_token_len, 
         vocab_size=tokenizer.vocab_size, 
@@ -137,9 +136,19 @@ def train(args):
         n_layer=6, 
         n_head=16, 
         n_embd=1024, 
-        audio_n_embd=1024
+        audio_n_embd=4096
     )
-
+    '''
+    config = LLaMAConfig(
+        block_size=401 + max_token_len, 
+        vocab_size=tokenizer.vocab_size, 
+        padded_vocab_size=tokenizer.vocab_size, 
+        n_layer=8, 
+        n_head=16, 
+        n_embd=768, 
+        audio_n_embd=4096
+    )
+    '''
     model = AudioLlama(config)
     model.to(device)
 
@@ -149,13 +158,19 @@ def train(args):
     # Create checkpoints directory
     Path(checkpoints_dir).mkdir(parents=True, exist_ok=True)
 
+    tmp = []
+
     # Train
     for step, data in enumerate(tqdm(train_dataloader)):
 
         audio = data["audio"].to(device)
         onset_roll = data["onset_roll"].to(device)
-        input_token = data["token"][:, 0 : -1].to(device)
-        target_token = data["token"][:, 1 :].to(device)
+
+        # tokens_num = min(max(data["tokens_num"]), max_token_len)
+        tokens_num = max_token_len
+        input_token = data["token"][:, 0 : tokens_num - 1].to(device)
+        target_token = data["token"][:, 1 : tokens_num].to(device)
+        # print(tokens_num, input_token.shape, target_token.shape)
 
         # from IPython import embed; embed(using=False); os._exit(0)
         # strings = tokenizer.tokens_to_strings(input_token[0].data.cpu().numpy())
@@ -171,19 +186,15 @@ def train(args):
 
         enc_model.train()
         model.train()
-        audio_emb = enc_model(audio)["onset_emb"]
+        # audio_emb = enc_model(audio)["emb"]
+        audio_emb = enc_model(audio)["emb"]
         logits, loss = model(audio_emb=audio_emb, idx=input_token, target=target_token)
+        # from IPython import embed; embed(using=False); os._exit(0)
 
         loss.backward()
 
         optimizer.step()
 
-        # if step % 100 == 0:
-        #     print("step: {}, loss: {:.3f}".format(step, loss.item()))
-        #     if wandb_log:
-        #         wandb.log({"loss": loss.item()})
-
-        '''
         if step % evaluate_step_frequency == 0:
             print("Evaluating ...")
             train_loss = validate(enc_model, model, eval_train_dataloader)
@@ -197,7 +208,6 @@ def train(args):
                     "train loss": train_loss,
                     "test loss": test_loss
                 })
-        '''
 
         # Save model
         if step % save_step_frequency == 0:
@@ -217,6 +227,8 @@ def train(args):
         if step == training_steps:
             break
 
+    from IPython import embed; embed(using=False); os._exit(0)
+
 
 def get_model(model_name):
     if model_name == "CRnn":
@@ -227,6 +239,12 @@ def get_model(model_name):
     elif model_name == "CRnn3":
         from models.crnn3 import CRnn3
         return CRnn3()
+    elif model_name == "CRnn3_onset_offset_vel":
+        from models.crnn3_onset_offset_vel import CRnn3_onset_offset_vel
+        return CRnn3_onset_offset_vel()
+    elif model_name == "CRnn4_onset_offset_vel":
+        from models.crnn4_onset_offset_vel import CRnn4_onset_offset_vel
+        return CRnn4_onset_offset_vel()
     elif model_name == "AudioLlama":
         from models.audiollama import AudioLlama
     else:

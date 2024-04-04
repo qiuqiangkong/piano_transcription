@@ -35,7 +35,8 @@ class Maestro:
         self.pitches_num = 128
         self.segment_frames = int(self.segment_seconds * self.fps) + 1
 
-        self.meta_csv = Path(self.root, "maestro-v2.0.0.csv")
+        # self.meta_csv = Path(self.root, "maestro-v2.0.0.csv")
+        self.meta_csv = Path(self.root, "maestro-v3.0.0.csv")
 
         self.load_meta()
                 
@@ -73,7 +74,6 @@ class Maestro:
         # t1 = time.time()
 
         # Load tokens.
-        '''
         string_processor = MaestroStringProcessor(
             label=False,
             onset=True,
@@ -84,6 +84,7 @@ class Maestro:
             pedal_offset=False,
             pedal_sustain=False,
         )
+
         '''
         string_processor = MaestroStringProcessor(
             label=False,
@@ -95,6 +96,7 @@ class Maestro:
             pedal_offset=False,
             pedal_sustain=False,
         )
+        '''
 
         targets_dict = self.load_targets(
             midi_path=midi_path, 
@@ -117,7 +119,6 @@ class Maestro:
             "tokens_num": targets_dict["tokens_num"],
             "string_processor": targets_dict["string_processor"]
         }
-
 
         debug = False
         if debug:

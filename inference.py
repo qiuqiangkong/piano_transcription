@@ -38,14 +38,16 @@ def inference(args):
     # checkpoint_path = Path("checkpoints/train/CRnn3/step=60000.pth")
     # checkpoint_path = Path("checkpoints/train/CRnn2_onset_offset_vel/step=100000.pth")
     # checkpoint_path = Path("checkpoints/train/CRnn3_onset_offset_vel/step=100000.pth")
-    checkpoint_path = Path("/public/qq_to_dylan/CRnn3_onset_offset_vel/step=100000.pth")
+    # checkpoint_path = Path("/public/qq_to_dylan/CRnn3_onset_offset_vel/step=100000.pth")
+    checkpoint_path = Path("checkpoints/train/CRnn3_onset_offset_vel/step=30000.pth")
 
     model = get_model(model_name)
     model.load_state_dict(torch.load(checkpoint_path))
     model.to(device)
 
-    root = "/datasets/maestro-v2.0.0/maestro-v2.0.0"
-    meta_csv = Path(root, "maestro-v2.0.0.csv")
+    # root = "/datasets/maestro-v2.0.0/maestro-v2.0.0"
+    root = "/datasets/maestro-v3.0.0/maestro-v3.0.0"
+    meta_csv = Path(root, "maestro-v3.0.0.csv")
     meta_data = load_meta(meta_csv, split="test")
     # meta_data = load_meta(meta_csv, split="train")
     audio_paths = [Path(root, name) for name in meta_data["audio_filename"]]
@@ -102,7 +104,7 @@ def inference(args):
                 elif model_name in ["CRnn3_onset_offset_vel"]:
                     onset_roll = output_dict["onset_roll"].cpu().numpy()[0]
                     emb = output_dict["emb"].cpu().numpy()[0]
-                    
+
                 else:
                     onset_roll = output_dict["onset_roll"].cpu().numpy()[0]
                 
