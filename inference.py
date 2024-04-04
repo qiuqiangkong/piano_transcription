@@ -98,6 +98,11 @@ def inference(args):
 
                 if model_name in ["CRnn2_onset_offset_vel"]:
                     onset_roll = output_dict["reg_onset_output"].cpu().numpy()[0]
+
+                elif model_name in ["CRnn3_onset_offset_vel"]:
+                    onset_roll = output_dict["onset_roll"].cpu().numpy()[0]
+                    emb = output_dict["emb"].cpu().numpy()[0]
+                    
                 else:
                     onset_roll = output_dict["onset_roll"].cpu().numpy()[0]
                 
@@ -106,6 +111,7 @@ def inference(args):
 
             bgn += segment_samples
 
+            '''
             soundfile.write(file="_zz.wav", data=segment.cpu().numpy(), samplerate=sample_rate)
 
             fig, axs = plt.subplots(2, 2, sharex=True)
@@ -115,6 +121,7 @@ def inference(args):
             axs[1, 1].matshow(output_dict["velocity_roll"].cpu().numpy()[0].T, origin='lower', aspect='auto', cmap='jet')
             plt.savefig("_zz.pdf")
             from IPython import embed; embed(using=False); os._exit(0)
+            '''
 
         onset_rolls = np.concatenate(onset_rolls, axis=0)
         # pickle.dump(onset_rolls, open("_zz.pkl", "wb"))
