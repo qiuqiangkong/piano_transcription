@@ -36,7 +36,9 @@ def inference(args):
     # checkpoint_path = Path("checkpoints", model_name, "epoch=100.pth")
     # checkpoint_path = Path("checkpoints/train/CRnn3/step=90000.pth")
     # checkpoint_path = Path("checkpoints/train/CRnn3/step=60000.pth")
-    checkpoint_path = Path("checkpoints/train/CRnn2_onset_offset_vel/step=20000.pth")
+    # checkpoint_path = Path("checkpoints/train/CRnn2_onset_offset_vel/step=100000.pth")
+    # checkpoint_path = Path("checkpoints/train/CRnn3_onset_offset_vel/step=100000.pth")
+    checkpoint_path = Path("/public/qq_to_dylan/CRnn3_onset_offset_vel/step=100000.pth")
 
     model = get_model(model_name)
     model.load_state_dict(torch.load(checkpoint_path))
@@ -45,6 +47,7 @@ def inference(args):
     root = "/datasets/maestro-v2.0.0/maestro-v2.0.0"
     meta_csv = Path(root, "maestro-v2.0.0.csv")
     meta_data = load_meta(meta_csv, split="test")
+    # meta_data = load_meta(meta_csv, split="train")
     audio_paths = [Path(root, name) for name in meta_data["audio_filename"]]
     midi_paths = [Path(root, name) for name in meta_data["midi_filename"]]
 
@@ -64,7 +67,8 @@ def inference(args):
     # for audio_idx, audio_path in enumerate(audio_paths):
     for audio_idx in range(len(audio_paths)):
 
-        print(audio_idx)
+        # audio_idx = 3
+        # print(audio_idx)
         audio_path = audio_paths[audio_idx]
 
 
@@ -96,15 +100,21 @@ def inference(args):
                     onset_roll = output_dict["reg_onset_output"].cpu().numpy()[0]
                 else:
                     onset_roll = output_dict["onset_roll"].cpu().numpy()[0]
+                
                 onset_rolls.append(onset_roll[0:-1, :])
                 # sep_wavs.append(sep_wav.cpu().numpy())
 
             bgn += segment_samples
 
-            # soundfile.write(file="_zz.wav", data=segment.cpu().numpy(), samplerate=sample_rate)
+            soundfile.write(file="_zz.wav", data=segment.cpu().numpy(), samplerate=sample_rate)
 
-            # plt.matshow(onset_roll.T, origin='lower', aspect='auto', cmap='jet')
-            # plt.savefig("_zz.pdf")
+            fig, axs = plt.subplots(2, 2, sharex=True)
+            axs[0, 0].matshow(output_dict["onset_roll"].cpu().numpy()[0].T, origin='lower', aspect='auto', cmap='jet')
+            axs[0, 1].matshow(output_dict["offset_roll"].cpu().numpy()[0].T, origin='lower', aspect='auto', cmap='jet')
+            axs[1, 0].matshow(output_dict["frame_roll"].cpu().numpy()[0].T, origin='lower', aspect='auto', cmap='jet')
+            axs[1, 1].matshow(output_dict["velocity_roll"].cpu().numpy()[0].T, origin='lower', aspect='auto', cmap='jet')
+            plt.savefig("_zz.pdf")
+            from IPython import embed; embed(using=False); os._exit(0)
 
         onset_rolls = np.concatenate(onset_rolls, axis=0)
         # pickle.dump(onset_rolls, open("_zz.pkl", "wb"))
@@ -129,6 +139,9 @@ def inference(args):
         precs.append(note_precision)
         recalls.append(note_recall)
         f1s.append(note_f1)
+
+        # if audio_idx == 10:
+        #     break
 
     print("----------")
     print("Avg Prec: {:.3f}".format(np.mean(precs)))

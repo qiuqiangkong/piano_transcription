@@ -356,7 +356,7 @@ def inference_in_batch(args):
             onset_tolerance=0.05, 
             offset_ratio=None,)
 
-        print("P: {:.3f}, R: {:.3f}, F1: {:.3f}, time: {:.3f} ".format(note_precision, note_recall, note_f1, time.time() - t1))
+        print("P: {:.3f}, R: {:.3f}, F1: {:.3f}, time: {:.3f} s".format(note_precision, note_recall, note_f1, time.time() - t1))
         precs.append(note_precision)
         recalls.append(note_recall)
         f1s.append(note_f1)

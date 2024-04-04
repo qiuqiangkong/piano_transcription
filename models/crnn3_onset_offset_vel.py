@@ -133,6 +133,8 @@ class CRnn3_onset_offset_vel(nn.Module):
         frame_roll, frame_emb = self.frame_model(x)
         vel_roll, vel_emb = self.vel_model(x)
 
+        emb = torch.cat((onset_emb, offset_emb, frame_emb, vel_emb))
+        
         output_dict = {
             "onset_roll": onset_roll,
             "offset_roll": offset_roll,
@@ -141,7 +143,8 @@ class CRnn3_onset_offset_vel(nn.Module):
             "onset_emb": onset_emb,
             "offset_emb": offset_emb,
             "frame_emb": frame_emb,
-            "velocity_emb": vel_emb
+            "velocity_emb": vel_emb,
+            "emb": emb,
         }
         
         return output_dict
