@@ -121,6 +121,7 @@ def inference_in_batch(args):
 
         while bgn < audio_samples:
 
+            # clip is 60s (4s * 15 batches)
             clip = audio[bgn : bgn + clip_samples]
             clip = librosa.util.fix_length(data=clip, size=clip_samples, axis=-1)
 
