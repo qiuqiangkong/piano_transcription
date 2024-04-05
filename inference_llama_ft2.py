@@ -137,7 +137,7 @@ def inference_in_batch(args):
 
             clip_strings = []
 
-            # 
+            # Generate in batch
             with torch.no_grad():
                 model.eval()
                 pred_tokens = model.generate_in_batch(
@@ -147,6 +147,7 @@ def inference_in_batch(args):
                     end_token=tokenizer.stoi("<eos>")
                 ).data.cpu().numpy()
 
+                # Convert tokens to strings
                 for k in range(pred_tokens.shape[0]):
                     for i, token in enumerate(pred_tokens[k]):
                         if token == tokenizer.stoi("<eos>"):
@@ -167,6 +168,7 @@ def inference_in_batch(args):
                         else:
                             clip_strings.append(string)
 
+            # 60s audio's string
             clip_strings = ["<sos>"] + clip_strings + ["<eos>"]
             clip_events = string_processor.strings_to_events(clip_strings)
             clip_notes = events_to_notes(clip_events)
