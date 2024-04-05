@@ -344,7 +344,10 @@ class MaestroStringProcessor:
             elif e["name"] == "note_off":
                 new_events.append(e)
 
+        # try:
         new_events.sort(key=lambda e: (e["time"], e["name"], e["pitch"]))
+        # except:
+        #     from IPython import embed; embed(using=False); os._exit(0)
         
         return new_events
 

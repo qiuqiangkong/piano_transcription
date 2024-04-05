@@ -197,8 +197,8 @@ def train(args):
 
         if step % evaluate_step_frequency == 0:
             print("Evaluating ...")
-            train_loss = validate(enc_model, model, eval_train_dataloader)
-            test_loss = validate(enc_model, model, eval_test_dataloader)
+            train_loss = validate(enc_model, model, eval_train_dataloader, max_token_len)
+            test_loss = validate(enc_model, model, eval_test_dataloader, max_token_len)
             print("--- step: {} ---".format(step))
             print("Train loss: {:.4f}".format(train_loss))
             print("Test loss: {:.4f}".format(test_loss))
@@ -282,7 +282,7 @@ def play_audio(mixture, target):
     from IPython import embed; embed(using=False); os._exit(0)
 
 
-def validate(enc_model, model, dataloader):
+def validate(enc_model, model, dataloader, max_token_len):
 
     pred_ids = []
     target_ids = []
@@ -296,12 +296,13 @@ def validate(enc_model, model, dataloader):
 
         audio = data["audio"].to(device)
         onset_roll = data["onset_roll"].to(device)
-        input_token = data["token"][:, 0 : -1].to(device)
-        target_token = data["token"][:, 1 :].to(device)
+        tokens_num = max_token_len
+        input_token = data["token"][:, 0 : tokens_num - 1].to(device)
+        target_token = data["token"][:, 1 : tokens_num].to(device)
 
         with torch.no_grad():
             enc_model.eval()
-            audio_emb = enc_model(audio)["onset_emb"]
+            audio_emb = enc_model(audio)["emb"]
 
         with torch.no_grad():
             model.eval()

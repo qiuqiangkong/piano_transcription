@@ -496,6 +496,8 @@ def events_to_notes(events):
                 )
                 notes.append(note)
     
+    notes.sort(key=lambda note: (note.start, note.pitch, note.end, note.velocity))
+
     return notes
 
 

@@ -86,6 +86,7 @@ class AudioLlama(nn.Module):
     ) -> Union[torch.Tensor, Tuple[torch.Tensor, List[KVCache]]]:
         B, T = idx.size()
 
+        # from IPython import embed; embed(using=False); os._exit(0)
         audio_h = self.audio_emb_to_emb(audio_emb)
 
         block_size = self.config.block_size
@@ -187,6 +188,9 @@ class AudioLlama(nn.Module):
         finish_flags = [False] * batch_size
 
         for i in range(max_new_tokens):
+
+            print(i)
+
             idx_cond = idx
             logits, _ = self(audio_emb, idx_cond)
             idx_next = torch.argmax(logits, dim=-1)
