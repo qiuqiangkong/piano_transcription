@@ -40,7 +40,7 @@ def inference(args):
 
     # Load checkpoint
     enc_model_name = "CRnn3"
-    checkpoint_path = Path("checkpoints/train/{}/step=90000.pth".format(enc_model_name))
+    checkpoint_path = Path("checkpoints/train/{}/step=100000.pth".format(enc_model_name))
     enc_model = get_model(enc_model_name)
     enc_model.load_state_dict(torch.load(checkpoint_path))
     enc_model.to(device)
@@ -98,8 +98,8 @@ def inference(args):
     idx = torch.LongTensor([[idx]]).to(device)
 
     # for audio_idx, audio_path in enumerate(audio_paths):
-    # for audio_idx in range(len(audio_paths)):
-    for audio_idx in range(2, len(audio_paths)):
+    for audio_idx in range(len(audio_paths)):
+    # for audio_idx in range(2, len(audio_paths)):
 
         print(audio_idx)
         audio_path = audio_paths[audio_idx]

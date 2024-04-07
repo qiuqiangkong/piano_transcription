@@ -16,6 +16,7 @@ from tqdm import tqdm
 import museval
 import argparse
 import wandb
+from losses import regress_onset_offset_frame_velocity_bce2
 
 from data.tokenizers import Tokenizer
 from models.audiollama import LLaMAConfig, AudioLlama
@@ -40,7 +41,7 @@ def train(args):
     lr = 2e-4
     # max_token_len = 256
     max_token_len = 1024
-    wandb_log = False
+    wandb_log = True
 
     checkpoints_dir = Path("./checkpoints", filename, model_name)
     
@@ -187,9 +188,19 @@ def train(args):
         enc_model.train()
         model.train()
         # audio_emb = enc_model(audio)["emb"]
-        audio_emb = enc_model(audio)["emb"]
-        logits, loss = model(audio_emb=audio_emb, idx=input_token, target=target_token)
-        # from IPython import embed; embed(using=False); os._exit(0)
+        enc_output_dict = enc_model(audio)
+        audio_emb = enc_output_dict["emb"]
+        logits, dec_loss = model(audio_emb=audio_emb, idx=input_token, target=target_token)
+        
+        target_dict = {
+            "onset_roll": data["onset_roll"].to(device),
+            "offset_roll": data["offset_roll"].to(device),
+            "frame_roll": data["frame_roll"].to(device),
+            "velocity_roll": data["velocity_roll"].to(device),
+        }
+        enc_loss = regress_onset_offset_frame_velocity_bce2(enc_output_dict, target_dict)
+
+        loss = dec_loss + enc_loss
 
         loss.backward()
 

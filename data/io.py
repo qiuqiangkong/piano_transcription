@@ -6,6 +6,15 @@ import numpy as np
 import pretty_midi
 
 
+# class Note:
+#     def __init__(self, start, end):
+#         self.start = start
+#         self.end = end
+
+#     def __repr__(self):
+#         return "Pedal(start={}, end={})".format(self.start, self.end)
+
+
 class Pedal:
     def __init__(self, start, end):
         self.start = start
@@ -147,6 +156,7 @@ def time_to_grid(time, fps):
     return round(time * fps) / fps
 
 
+'''
 def notes_to_rolls_and_events(notes, segment_frames, segment_start, segment_end, fps, label):
 
     #
@@ -260,6 +270,134 @@ def notes_to_rolls_and_events(notes, segment_frames, segment_start, segment_end,
         "offset_roll": offset_roll,
         "velocity_roll": velocity_roll,
         "events": events,
+    }
+
+    return data
+'''
+
+def notes_to_rolls_and_events(notes, segment_frames, segment_start, segment_end, fps, label):
+
+    #
+    seg_start = segment_start
+    seg_end = segment_end
+    seg_len = seg_end - seg_start
+    pitches_num = 128
+
+    # Covert notes information to words.
+    frame_roll = np.zeros((segment_frames, pitches_num))
+    onset_roll = np.zeros((segment_frames, pitches_num))
+    offset_roll = np.zeros((segment_frames, pitches_num))
+    velocity_roll = np.zeros((segment_frames, pitches_num))
+
+    events = []
+    active_notes = []
+
+    for note in notes:
+
+        if 0 <= note.end < seg_start or seg_end < note.start < math.inf:
+            continue
+
+        onset_time = note.start - seg_start
+        offset_time = note.end - seg_start
+        pitch = note.pitch
+        velocity = note.velocity
+
+        active_note = new_note = pretty_midi.Note(
+            pitch=pitch, 
+            start=onset_time, 
+            end=offset_time, 
+            velocity=velocity
+        )
+        active_notes.append(active_note)
+
+        onset_time = time_to_grid(onset_time, fps)
+        offset_time = time_to_grid(offset_time, fps)
+
+        if offset_time == onset_time:
+            offset_time = onset_time + 0.01
+
+        if onset_time < 0 and 0 <= offset_time <= seg_len:
+
+            offset_idx = round(offset_time * fps)
+            offset_roll[offset_idx, pitch] = 1
+            frame_roll[0 : offset_idx + 1, pitch] = 1
+
+            events.append({
+                "name": "note_sustain", 
+                "time": 0, 
+                "label": label,
+                "pitch": pitch, 
+                "velocity": velocity
+            })
+            events.append({
+                "name": "note_off",
+                "time": offset_time, 
+                "label": label,
+                "pitch": pitch,
+            })
+
+        elif onset_time < 0 and seg_len < offset_time < math.inf:
+
+            frame_roll[:, pitch] = 1
+
+            events.append({
+                "name": "note_sustain", 
+                "time": 0, 
+                "label": label,
+                "pitch": pitch, 
+                "velocity": velocity
+            })
+
+        elif 0 <= onset_time <= seg_len and 0 <= offset_time <= seg_len:
+
+            onset_idx = round(onset_time * fps)
+            offset_idx = round(offset_time * fps)
+            onset_roll[onset_idx, pitch] = 1
+            velocity_roll[onset_idx, pitch] = velocity / 128.0
+            offset_roll[offset_idx, pitch] = 1
+            frame_roll[onset_idx : offset_idx + 1, pitch] = 1
+
+            events.append({
+                "name": "note_on",
+                "time": onset_time, 
+                "label": label,
+                "pitch": pitch, 
+                "velocity": velocity
+            })
+            events.append({
+                "name": "note_off",
+                "time": offset_time, 
+                "label": label,
+                "pitch": pitch, 
+            })
+
+        elif 0 <= onset_time <= seg_len and seg_len < offset_time < math.inf:
+
+            onset_idx = round(onset_time * fps)
+            onset_roll[onset_idx, pitch] = 1
+            velocity_roll[onset_idx, pitch] = velocity / 128.0
+            frame_roll[onset_idx : , pitch] = 1
+
+            events.append({
+                "name": "note_on",
+                "time": onset_time, 
+                "label": label,
+                "pitch": pitch, 
+                "velocity": velocity
+            })
+
+    # if label == "slakh2100-Drums":
+    #     from IPython import embed; embed(using=False); os._exit(0)
+
+    events.sort(key=lambda event: (event["time"], event["name"], event["label"], event["pitch"]))
+    
+    data = {
+        "frame_roll": frame_roll,
+        "onset_roll": onset_roll,
+        "offset_roll": offset_roll,
+        "velocity_roll": velocity_roll,
+        "events": events,
+        "notes": active_notes,
     }
 
     return data

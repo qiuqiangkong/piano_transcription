@@ -93,7 +93,7 @@ def inference(args):
     precs = []
     recalls = []
     f1s = []
-
+    
     idx = tokenizer.stoi("<sos>")
     idx = torch.LongTensor([[idx]]).to(device)
 
@@ -215,7 +215,7 @@ def inference_in_batch(args):
 
     # Load checkpoint
     enc_model_name = "CRnn3"
-    checkpoint_path = Path("checkpoints/train_llama_ft/AudioLlama/step=100000_encoder.pth")
+    checkpoint_path = Path("checkpoints/train_llama_ft/AudioLlama/step=50000_encoder.pth")
     enc_model = get_model(enc_model_name)
     enc_model.load_state_dict(torch.load(checkpoint_path))
     enc_model.to(device)
@@ -224,7 +224,7 @@ def inference_in_batch(args):
         param.requires_grad = False
 
     # Load checkpoint
-    checkpoint_path = Path("checkpoints/train_llama_ft/AudioLlama/step=100000.pth")
+    checkpoint_path = Path("checkpoints/train_llama_ft/AudioLlama/step=50000.pth")
     config = LLaMAConfig(
         block_size=401 + max_token_len, 
         vocab_size=tokenizer.vocab_size, 
@@ -360,6 +360,7 @@ def inference_in_batch(args):
         precs.append(note_precision)
         recalls.append(note_recall)
         f1s.append(note_f1)
+        asdf
 
     print("----------")
     print("Avg Prec: {:.3f}".format(np.mean(precs)))

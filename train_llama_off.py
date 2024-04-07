@@ -8,7 +8,7 @@ import soundfile
 import matplotlib.pyplot as plt
 from pathlib import Path
 import torch.optim as optim
-from data.maestro import Maestro
+from data.maestro import Maestro, MaestroMultiTask
 from data.collate import collate_fn
 from data.io import events_to_notes
 from models.crnn import CRnn
@@ -17,57 +17,66 @@ import museval
 import argparse
 import wandb
 
-from data.tokenizers import Tokenizer
-from models.audiollama import LLaMAConfig, AudioLlama
+from data.tokenizers import Tokenizer2
+from models.audiollama_qa import LLaMAConfig, AudioLlamaQA
 
 
 def train(args):
 
     # Arguments
-    model_name = args.model_name
+    # model_name = args.model_name
 
     # Default parameters
     device = "cuda"
-    # batch_size = 16
-    batch_size = 9
+    batch_size = 16
+    # batch_size = 8
+    # num_workers = 0
     num_workers = 32
-    evaluate_step_frequency = 2000
-    save_step_frequency = 10000
-    training_steps = 300001
+    evaluate_step_frequency = 1000
+    save_step_frequency = 2000
+    training_steps = 100000
     debug = False
     filename = Path(__file__).stem
     segment_seconds = 4.
-    lr = 2e-4
-    # max_token_len = 256
-    max_token_len = 1024
-    wandb_log = False
+    lr = 1e-4
+    max_token_len = 20
+    # max_token_len = 1024
+    wandb_log = True
 
+    model_name = "AudioLlama"
     checkpoints_dir = Path("./checkpoints", filename, model_name)
     
+    # root = "/datasets/maestro-v2.0.0/maestro-v2.0.0"
     root = "/datasets/maestro-v3.0.0/maestro-v3.0.0"
 
     if wandb_log:
         wandb.init(
             project="mini_piano_transcription",
+            name="train_llama_off"
+            # config={
+            #     "architecture": "CNN",
+            # }
         )
 
-    tokenizer = Tokenizer()
-
+    tokenizer = Tokenizer2()
+    
     # Dataset
-    train_dataset = Maestro(
+    train_dataset = MaestroMultiTask(
         root=root,
         split="train",
         segment_seconds=segment_seconds,
         tokenizer=tokenizer,
         max_token_len=max_token_len + 1,
+        task="offset"
     )
 
-    test_dataset = Maestro(
+    test_dataset = MaestroMultiTask(
         root=root,
         split="train",
         segment_seconds=segment_seconds,
         tokenizer=tokenizer,
         max_token_len=max_token_len + 1,
+        task="offset"
     )
 
     # Sampler
@@ -106,8 +115,6 @@ def train(args):
     # Load checkpoint
     enc_model_name = "CRnn3_onset_offset_vel"
     checkpoint_path = Path("checkpoints/train/{}/step=100000.pth".format(enc_model_name))
-    # enc_model_name = "CRnn3"
-    # checkpoint_path = Path("checkpoints/train/{}/step=90000.pth".format(enc_model_name))
     enc_model = get_model(enc_model_name)
     enc_model.load_state_dict(torch.load(checkpoint_path))
     enc_model.to(device)
@@ -128,28 +135,17 @@ def train(args):
         audio_n_embd=1024
     )
     '''
-    
     config = LLaMAConfig(
-        block_size=401 + max_token_len, 
+        block_size=401 + max_token_len * 2 + 1, 
         vocab_size=tokenizer.vocab_size, 
         padded_vocab_size=tokenizer.vocab_size, 
-        n_layer=12, 
+        n_layer=6, 
         n_head=16, 
-        n_embd=768, 
-        audio_n_embd=4096
+        n_embd=1024, 
+        audio_n_embd=1024
     )
-    '''
-    config = LLaMAConfig(
-        block_size=401 + max_token_len, 
-        vocab_size=tokenizer.vocab_size, 
-        padded_vocab_size=tokenizer.vocab_size, 
-        n_layer=8, 
-        n_head=16, 
-        n_embd=768, 
-        audio_n_embd=4096
-    )
-    '''
-    model = AudioLlama(config)
+
+    model = AudioLlamaQA(config)
     model.to(device)
 
     # Optimizer
@@ -158,19 +154,22 @@ def train(args):
     # Create checkpoints directory
     Path(checkpoints_dir).mkdir(parents=True, exist_ok=True)
 
-    tmp = []
-
     # Train
     for step, data in enumerate(tqdm(train_dataloader)):
 
-        audio = data["audio"].to(device)
-        onset_roll = data["onset_roll"].to(device)
+        # from IPython import embed; embed(using=False); os._exit(0)
 
-        # tokens_num = min(max(data["tokens_num"]), max_token_len)
-        tokens_num = max_token_len
-        input_token = data["token"][:, 0 : tokens_num - 1].to(device)
-        target_token = data["token"][:, 1 : tokens_num].to(device)
-        # print(tokens_num, input_token.shape, target_token.shape)
+        audio = data["audio"].to(device)
+        # onset_roll = data["onset_roll"].to(device)
+        # input_token = data["token"][:, 0 : -1].to(device)
+        # target_token = data["token"][:, 1 :].to(device)
+        question_token = data["question_token"].to(device)
+        answer_token = data["answer_token"][:, 0 : -1].to(device)
+        target_token = data["answer_token"][:, 1 :].to(device)
+
+        idx = torch.cat((question_token, answer_token), dim=1)
+
+        # data["event"][0]
 
         # from IPython import embed; embed(using=False); os._exit(0)
         # strings = tokenizer.tokens_to_strings(input_token[0].data.cpu().numpy())
@@ -186,19 +185,28 @@ def train(args):
 
         enc_model.train()
         model.train()
-        # audio_emb = enc_model(audio)["emb"]
-        audio_emb = enc_model(audio)["emb"]
-        logits, loss = model(audio_emb=audio_emb, idx=input_token, target=target_token)
-        # from IPython import embed; embed(using=False); os._exit(0)
+        audio_emb = enc_model(audio)["offset_emb"]
+        logits, loss = model(audio_emb=audio_emb, idx=idx, target=target_token)
+        # logits, loss = model(
+        #     audio_emb=audio_emb, 
+        #     question_token=question_token,
+        #     answer_token=answer_token,
+        #     target_token=target_token
+        # )
 
         loss.backward()
 
         optimizer.step()
 
+        # if step % 100 == 0:
+        #     print("step: {}, loss: {:.3f}".format(step, loss.item()))
+        #     if wandb_log:
+        #         wandb.log({"loss": loss.item()})
+
         if step % evaluate_step_frequency == 0:
             print("Evaluating ...")
-            train_loss = validate(enc_model, model, eval_train_dataloader, max_token_len)
-            test_loss = validate(enc_model, model, eval_test_dataloader, max_token_len)
+            train_loss = validate(enc_model, model, eval_train_dataloader)
+            test_loss = validate(enc_model, model, eval_test_dataloader)
             print("--- step: {} ---".format(step))
             print("Train loss: {:.4f}".format(train_loss))
             print("Test loss: {:.4f}".format(test_loss))
@@ -208,7 +216,7 @@ def train(args):
                     "train loss": train_loss,
                     "test loss": test_loss
                 })
-        
+
         # Save model
         if step % save_step_frequency == 0:
             checkpoint_path = Path(checkpoints_dir, "step={}.pth".format(step))
@@ -227,8 +235,6 @@ def train(args):
         if step == training_steps:
             break
 
-    from IPython import embed; embed(using=False); os._exit(0)
-
 
 def get_model(model_name):
     if model_name == "CRnn":
@@ -242,11 +248,8 @@ def get_model(model_name):
     elif model_name == "CRnn3_onset_offset_vel":
         from models.crnn3_onset_offset_vel import CRnn3_onset_offset_vel
         return CRnn3_onset_offset_vel()
-    elif model_name == "CRnn4_onset_offset_vel":
-        from models.crnn4_onset_offset_vel import CRnn4_onset_offset_vel
-        return CRnn4_onset_offset_vel()
-    elif model_name == "AudioLlama":
-        from models.audiollama import AudioLlama
+    elif model_name == "AudioLlamaQA":
+        from models.audiollama_qa import AudioLlamaQA
     else:
         raise NotImplementedError
 
@@ -282,7 +285,7 @@ def play_audio(mixture, target):
     from IPython import embed; embed(using=False); os._exit(0)
 
 
-def validate(enc_model, model, dataloader, max_token_len):
+def validate(enc_model, model, dataloader):
 
     pred_ids = []
     target_ids = []
@@ -295,18 +298,19 @@ def validate(enc_model, model, dataloader, max_token_len):
             break
 
         audio = data["audio"].to(device)
-        onset_roll = data["onset_roll"].to(device)
-        tokens_num = max_token_len
-        input_token = data["token"][:, 0 : tokens_num - 1].to(device)
-        target_token = data["token"][:, 1 : tokens_num].to(device)
+        question_token = data["question_token"].to(device)
+        answer_token = data["answer_token"][:, 0 : -1].to(device)
+        target_token = data["answer_token"][:, 1 :].to(device)
+
+        idx = torch.cat((question_token, answer_token), dim=1)
 
         with torch.no_grad():
             enc_model.eval()
-            audio_emb = enc_model(audio)["emb"]
+            audio_emb = enc_model(audio)["offset_emb"]
 
         with torch.no_grad():
             model.eval()
-            logits, loss = model(audio_emb=audio_emb, idx=input_token, target=target_token)
+            logits, loss = model(audio_emb=audio_emb, idx=idx, target=target_token)
 
         losses.append(loss.item())
 
@@ -316,7 +320,7 @@ def validate(enc_model, model, dataloader, max_token_len):
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument('--model_name', type=str, default="AudioLlama")
+    # parser.add_argument('--model_name', type=str, default="AudioLlama")
     args = parser.parse_args()
 
     train(args)

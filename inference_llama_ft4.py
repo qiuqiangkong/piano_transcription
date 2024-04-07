@@ -22,7 +22,7 @@ import re
 from data.tokenizers import Tokenizer
 from models.audiollama import LLaMAConfig, AudioLlama
 from data.maestro import MaestroStringProcessor
-from data.io import events_to_notes, notes_to_midi
+from data.io import events_to_notes, notes_to_midi, read_single_track_midi, write_notes_to_midi
 
 
 def inference_in_batch(args):
@@ -42,7 +42,7 @@ def inference_in_batch(args):
 
     # Load checkpoint
     enc_model_name = "CRnn3_onset_offset_vel"
-    checkpoint_path = Path("checkpoints/train_llama_ft2/AudioLlama/step=100000_encoder.pth")
+    checkpoint_path = Path("checkpoints/train_llama_ft4/CRnn3_onset_offset_vel/step=180000_encoder.pth")
     enc_model = get_model(enc_model_name)
     enc_model.load_state_dict(torch.load(checkpoint_path))
     enc_model.to(device)
@@ -51,14 +51,14 @@ def inference_in_batch(args):
         param.requires_grad = False
 
     # Load checkpoint
-    checkpoint_path = Path("checkpoints/train_llama_ft2/AudioLlama/step=100000.pth")
+    checkpoint_path = Path("checkpoints/train_llama_ft4/CRnn3_onset_offset_vel/step=180000.pth")
     config = LLaMAConfig(
         block_size=401 + max_token_len, 
         vocab_size=tokenizer.vocab_size, 
         padded_vocab_size=tokenizer.vocab_size, 
-        n_layer=6, 
+        n_layer=12, 
         n_head=16, 
-        n_embd=1024, 
+        n_embd=768, 
         audio_n_embd=4096
     )
     model = AudioLlama(config)
@@ -100,6 +100,7 @@ def inference_in_batch(args):
     idx = torch.LongTensor(idx * np.ones((batch_size, 1))).to(device)
 
     for audio_idx in range(len(audio_paths)):
+    # for audio_idx in range(50, len(audio_paths)):
 
         print(audio_idx)
         t1 = time.time()
@@ -179,15 +180,20 @@ def inference_in_batch(args):
 
             all_notes.extend(clip_notes)
 
+        #
         notes_to_midi(all_notes, "_zz.mid")
         soundfile.write(file="_zz.wav", data=audio, samplerate=16000)
-        
+
         est_midi_path = Path(output_dir, "{}.mid".format(Path(audio_path).stem))
         notes_to_midi(all_notes, str(est_midi_path))
         
         ref_midi_path = midi_paths[audio_idx]
-        ref_intervals, ref_pitches = parse_midi(ref_midi_path)
-        est_intervals, est_pitches = parse_midi(est_midi_path)
+        notes, _ = read_single_track_midi(ref_midi_path, extend_pedal=True)
+        write_notes_to_midi(notes, "_zz_gt.mid")
+
+        ref_intervals, ref_pitches, ref_vels = parse_midi("_zz_gt.mid")
+        est_intervals, est_pitches, est_vels = parse_midi(est_midi_path)
+
 
         note_precision, note_recall, note_f1, _ = \
         mir_eval.transcription.precision_recall_f1_overlap(
@@ -200,13 +206,40 @@ def inference_in_batch(args):
         )
 
         print("P: {:.3f}, R: {:.3f}, F1: {:.3f}, time: {:.3f} s".format(note_precision, note_recall, note_f1, time.time() - t1))
+
         precs.append(note_precision)
         recalls.append(note_recall)
         f1s.append(note_f1)
-        
 
-        a1 = list(np.concatenate((ref_intervals, ref_pitches[:, None]),axis=-1))
-        a1.sort(key=lambda x: x[0])  # sort by keys
+        # eval with offset
+        note_precision, note_recall, note_f1, _ = \
+        mir_eval.transcription.precision_recall_f1_overlap(
+            ref_intervals=ref_intervals, 
+            ref_pitches=ref_pitches, 
+            est_intervals=est_intervals, 
+            est_pitches=est_pitches, 
+            onset_tolerance=0.05, 
+            offset_ratio=0.2,
+
+        )
+        print("    P: {:.3f}, R: {:.3f}, F1: {:.3f}, time: {:.3f} s".format(note_precision, note_recall, note_f1, time.time() - t1))
+        
+        # eval with vel
+        note_precision, note_recall, note_f1, _ = \
+           mir_eval.transcription_velocity.precision_recall_f1_overlap(
+               ref_intervals=ref_intervals,
+               ref_pitches=ref_pitches,
+               ref_velocities=ref_vels,
+               est_intervals=est_intervals,
+               est_pitches=est_pitches,
+               est_velocities=est_vels,
+               onset_tolerance=0.05, 
+               offset_ratio=0.2)
+
+        print("        P: {:.3f}, R: {:.3f}, F1: {:.3f}, time: {:.3f} s".format(note_precision, note_recall, note_f1, time.time() - t1))
+
+    # a1 = list(np.concatenate((ref_intervals, ref_pitches[:, None]),axis=-1))
+        # a1.sort(key=lambda x: x[0])  # sort by keys
         from IPython import embed; embed(using=False); os._exit(0)
 
     print("----------")
@@ -240,12 +273,14 @@ def parse_midi(midi_path):
 
     intervals = []
     pitches = []
+    velocities = []
 
     for note in notes:
         intervals.append([note.start, note.end])
         pitches.append(note.pitch)
+        velocities.append(note.velocity)
 
-    return np.array(intervals), np.array(pitches)
+    return np.array(intervals), np.array(pitches), np.array(velocities)
 
 
 def deduplicate_array(array):

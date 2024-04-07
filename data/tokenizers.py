@@ -189,6 +189,16 @@ class BeatTokenizer:
             return token
 
 
+class TaskTokenizer(BaseTokenizer):
+    def __init__(self):
+        strings = [
+            "onset", "offset", "velocity"
+        ]
+        strings = ["task={}".format(s) for s in strings]
+        BaseTokenizer.__init__(self, strings)
+        self.vocab_size = 100
+
+
 class Tokenizer:
     def __init__(self, verbose=False):
         self.tokenizers = [
@@ -201,7 +211,75 @@ class Tokenizer:
             GtzanLabelTokenizer(),
             PitchTokenizer(),
             VelocityTokenizer(),
-            BeatTokenizer()
+            BeatTokenizer(),
+        ]
+
+        self.vocab_size = np.sum([tokenizer.vocab_size for tokenizer in self.tokenizers])
+
+        if verbose:
+            print("Vocab size: {}".format(self.vocab_size))
+            for tokenizer in self.tokenizers:
+                print(tokenizer.vocab_size)
+
+    def itos(self, token):
+        assert 0 <= token < self.vocab_size
+
+        for tokenizer in self.tokenizers:
+            if token >= tokenizer.vocab_size:
+                token -= tokenizer.vocab_size
+            else:
+                break
+            
+        return tokenizer.itos(token)
+
+    def stoi(self, string):
+        
+        start_token = 0
+
+        for tokenizer in self.tokenizers:
+            
+            token = tokenizer.stoi(string)
+            
+            if token is not None:
+                return start_token + token
+            else:
+                start_token += tokenizer.vocab_size
+
+        raise NotImplementedError("{} is not supported!".format(string))
+
+    def strings_to_tokens(self, strings):
+
+        tokens = []
+
+        for string in strings:
+            tokens.append(self.stoi(string))
+
+        return tokens
+
+    def tokens_to_strings(self, tokens):
+
+        strings = []
+
+        for token in tokens:
+            strings.append(self.itos(token))
+
+        return strings
+
+
+class Tokenizer2:
+    def __init__(self, verbose=False):
+        self.tokenizers = [
+            SpecialTokenizer(),
+            NameTokenizer(), 
+            TimeTokenizer(), 
+            # MidiProgramTokenizer(),
+            MaestroLabelTokenizer(),
+            Slakh2100LabelTokenizer(),
+            GtzanLabelTokenizer(),
+            PitchTokenizer(),
+            VelocityTokenizer(),
+            BeatTokenizer(),
+            TaskTokenizer(),
         ]
 
         self.vocab_size = np.sum([tokenizer.vocab_size for tokenizer in self.tokenizers])
