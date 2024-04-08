@@ -273,13 +273,15 @@ def inference_in_batch(args):
     idx = torch.LongTensor(idx * np.ones((batch_size, 1))).to(device)
 
     # for audio_idx, audio_path in enumerate(audio_paths):
-    for audio_idx in range(len(audio_paths)):
-    # for audio_idx in range(2, len(audio_paths)):
+    # for audio_idx in range(len(audio_paths)):
+    for audio_idx in range(110, len(audio_paths)):
 
         print(audio_idx)
         t1 = time.time()
 
         audio_path = audio_paths[audio_idx]
+
+        # from IPython import embed; embed(using=False); os._exit(0)
 
         audio, _ = librosa.load(path=audio_path, sr=sample_rate, mono=True)
         # (channels_num, audio_samples)
@@ -337,8 +339,8 @@ def inference_in_batch(args):
 
             bgn += clip_samples
 
-        notes_to_midi(all_notes, "_zz.mid")
-        soundfile.write(file="_zz.wav", data=audio, samplerate=16000)
+        # notes_to_midi(all_notes, "_zz.mid")
+        # soundfile.write(file="_zz.wav", data=audio, samplerate=16000)
         
         est_midi_path = Path(output_dir, "{}.mid".format(Path(audio_path).stem))
         notes_to_midi(all_notes, str(est_midi_path))

@@ -119,6 +119,7 @@ class AudioLlamaQA(nn.Module):
         # (B, T, C)
 
         x = torch.cat((audio_h, x), dim=1)
+        # print(x.shape)
 
         if input_pos is None:  # proxy for use_cache=False
             for block in self.transformer.h:
@@ -137,8 +138,6 @@ class AudioLlamaQA(nn.Module):
         x = self.transformer.ln_f(x)
 
         logits = self.lm_head(x)  # (b, t, vocab_size)
-
-        # from IPython import embed; embed(using=False); os._exit(0) 
 
         if target is not None:
             logits = logits[:, -target.shape[1] :, :].contiguous()
@@ -234,12 +233,13 @@ class AudioLlamaQA(nn.Module):
         Most likely you'll want to make sure to be in model.eval() mode of operation for this.
         """
 
+        question_len = idx.shape[1]
         batch_size = audio_emb.shape[0]
         finish_flags = [False] * batch_size
 
         for i in range(max_new_tokens):
 
-            print(i)
+            # print(i)
 
             idx_cond = idx
             logits, _ = self(audio_emb, idx_cond)
@@ -253,9 +253,7 @@ class AudioLlamaQA(nn.Module):
             if np.sum(finish_flags) == batch_size:
                 break
 
-        # print("pred tokens: {}".format(i))
-
-        return idx
+        return idx[:, question_len - 1 :]
 
     @classmethod
     def from_name(cls, name: str) -> Self:

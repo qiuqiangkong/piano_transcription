@@ -8,7 +8,7 @@ import soundfile
 import matplotlib.pyplot as plt
 from pathlib import Path
 import torch.optim as optim
-from data.maestro import Maestro, MaestroMultiTask
+from data.maestro import Maestro, MaestroMultiTask2
 from data.collate import collate_fn
 from data.io import events_to_notes
 from models.crnn import CRnn
@@ -38,8 +38,10 @@ def train(args):
     debug = False
     filename = Path(__file__).stem
     segment_seconds = 4.
-    lr = 1e-5
-    max_token_len = 20
+    lr = 1e-4
+    # max_token_len = 20
+    question_token_len = 20
+    answer_token_len = 512
     # max_token_len = 1024
     wandb_log = True
 
@@ -61,22 +63,24 @@ def train(args):
     tokenizer = Tokenizer2()
     
     # Dataset
-    train_dataset = MaestroMultiTask(
+    train_dataset = MaestroMultiTask2(
         root=root,
         split="train",
         segment_seconds=segment_seconds,
         tokenizer=tokenizer,
-        max_token_len=max_token_len + 1,
-        task="velocity"
+        question_token_len=question_token_len,
+        answer_token_len=answer_token_len,
+        task="onset"
     )
 
-    test_dataset = MaestroMultiTask(
+    test_dataset = MaestroMultiTask2(
         root=root,
-        split="train",
+        split="test",
         segment_seconds=segment_seconds,
         tokenizer=tokenizer,
-        max_token_len=max_token_len + 1,
-        task="velocity"
+        question_token_len=question_token_len,
+        answer_token_len=answer_token_len,
+        task="onset"
     )
 
     # Sampler
@@ -136,7 +140,7 @@ def train(args):
     )
     '''
     config = LLaMAConfig(
-        block_size=401 + max_token_len * 2 + 1, 
+        block_size=401 + question_token_len + answer_token_len + 1, 
         vocab_size=tokenizer.vocab_size, 
         padded_vocab_size=tokenizer.vocab_size, 
         n_layer=6, 
@@ -168,8 +172,7 @@ def train(args):
         target_token = data["answer_token"][:, 1 :].to(device)
 
         idx = torch.cat((question_token, answer_token), dim=1)
-        # from IPython import embed; embed(using=False); os._exit(0)
-
+        
         # data["event"][0]
 
         # from IPython import embed; embed(using=False); os._exit(0)
@@ -270,6 +273,7 @@ class Sampler:
                 random.shuffle(self.indexes)
                 pointer = 0
                 
+            # print(pointer)
             index = self.indexes[pointer]
             pointer += 1
 
