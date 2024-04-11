@@ -39,7 +39,7 @@ def inference(args):
     # checkpoint_path = Path("checkpoints/train/CRnn2_onset_offset_vel/step=100000.pth")
     # checkpoint_path = Path("checkpoints/train/CRnn3_onset_offset_vel/step=100000.pth")
     # checkpoint_path = Path("/public/qq_to_dylan/CRnn3_onset_offset_vel/step=100000.pth")
-    checkpoint_path = Path("checkpoints/train/CRnn3_onset_offset_vel/step=30000.pth")
+    checkpoint_path = Path("checkpoints/train/CRnn3_onset_offset_vel/step=100000.pth")
 
     model = get_model(model_name)
     model.load_state_dict(torch.load(checkpoint_path))

@@ -8,7 +8,7 @@ import soundfile
 import matplotlib.pyplot as plt
 from pathlib import Path
 import torch.optim as optim
-from data.maestro import Maestro, MaestroMultiTask2
+from data.maestro import Maestro, MaestroMultiTask3
 from data.collate import collate_fn
 from data.io import events_to_notes
 from models.crnn import CRnn
@@ -40,11 +40,14 @@ def train(args):
     segment_seconds = 4.
     lr = 1e-4
     # max_token_len = 20
-    question_token_len = 20
-    answer_token_len = 512
+    # question_token_len = 20
+    question_token_len = 512
+    # answer_token_len = 512
+    # answer_token_len = 20
+    answer_token_len = 256
     # max_token_len = 1024
     wandb_log = True
-
+    
     model_name = "AudioLlama"
     checkpoints_dir = Path("./checkpoints", filename, model_name)
     
@@ -54,7 +57,7 @@ def train(args):
     if wandb_log:
         wandb.init(
             project="mini_piano_transcription",
-            name="train_llama_vel"
+            name="train_llama_off"
             # config={
             #     "architecture": "CNN",
             # }
@@ -63,24 +66,26 @@ def train(args):
     tokenizer = Tokenizer2()
     
     # Dataset
-    train_dataset = MaestroMultiTask2(
+    train_dataset = MaestroMultiTask3(
         root=root,
         split="train",
         segment_seconds=segment_seconds,
         tokenizer=tokenizer,
         question_token_len=question_token_len,
         answer_token_len=answer_token_len,
-        task="onset"
-    )
+        task="offset",
+        extend_pedal=True,
+    ) 
 
-    test_dataset = MaestroMultiTask2(
+    test_dataset = MaestroMultiTask3(
         root=root,
         split="test",
         segment_seconds=segment_seconds,
         tokenizer=tokenizer,
         question_token_len=question_token_len,
         answer_token_len=answer_token_len,
-        task="onset"
+        task="offset",
+        extend_pedal=True,
     )
 
     # Sampler
@@ -118,11 +123,12 @@ def train(args):
 
     # Load checkpoint
     enc_model_name = "CRnn3"
-    checkpoint_path = Path("checkpoints/train/{}/step=90000.pth".format(enc_model_name))
+    checkpoint_path = Path("checkpoints/train_llama_mt_on/AudioLlama/step=60000_encoder.pth")
     enc_model = get_model(enc_model_name)
     enc_model.load_state_dict(torch.load(checkpoint_path))
     enc_model.to(device)
 
+    checkpoint_path = Path("checkpoints/train_llama_mt_on/AudioLlama/step=60000.pth")
     config = LLaMAConfig(
         block_size=401 + question_token_len + answer_token_len + 1, 
         vocab_size=tokenizer.vocab_size, 
@@ -132,8 +138,8 @@ def train(args):
         n_embd=1024, 
         audio_n_embd=1024
     )
-
     model = AudioLlamaQA(config)
+    model.load_state_dict(torch.load(checkpoint_path))
     model.to(device)
 
     # Optimizer
@@ -145,13 +151,26 @@ def train(args):
     # Train
     for step, data in enumerate(tqdm(train_dataloader)):
 
+        # from IPython import embed; embed(using=False); os._exit(0)
+
         audio = data["audio"].to(device)
+        # onset_roll = data["onset_roll"].to(device)
+        # input_token = data["token"][:, 0 : -1].to(device)
+        # target_token = data["token"][:, 1 :].to(device)
         question_token = data["question_token"].to(device)
         answer_token = data["answer_token"][:, 0 : -1].to(device)
         target_token = data["answer_token"][:, 1 :].to(device)
 
         idx = torch.cat((question_token, answer_token), dim=1)
         
+        # data["event"][0]
+
+        # from IPython import embed; embed(using=False); os._exit(0)
+        # strings = tokenizer.tokens_to_strings(input_token[0].data.cpu().numpy())
+        # events = data["string_processor"][0].strings_to_events(strings)
+        # notes = events_to_notes(events)
+        # print(notes)
+
         # Play the audio.
         if debug:
             play_audio(mixture, target)
@@ -162,10 +181,21 @@ def train(args):
         model.train()
         audio_emb = enc_model(audio)["onset_emb"]
         logits, loss = model(audio_emb=audio_emb, idx=idx, target=target_token)
-        
+        # logits, loss = model(
+        #     audio_emb=audio_emb, 
+        #     question_token=question_token,
+        #     answer_token=answer_token,
+        #     target_token=target_token
+        # )
+
         loss.backward()
 
         optimizer.step()
+
+        # if step % 100 == 0:
+        #     print("step: {}, loss: {:.3f}".format(step, loss.item()))
+        #     if wandb_log:
+        #         wandb.log({"loss": loss.item()})
 
         if step % evaluate_step_frequency == 0:
             print("Evaluating ...")
@@ -180,7 +210,7 @@ def train(args):
                     "train loss": train_loss,
                     "test loss": test_loss
                 })
-
+        
         # Save model
         if step % save_step_frequency == 0:
             checkpoint_path = Path(checkpoints_dir, "step={}.pth".format(step))

@@ -28,8 +28,8 @@ def train(args):
 
     # Default parameters
     device = "cuda"
-    batch_size = 16
-    # batch_size = 8
+    # batch_size = 16
+    batch_size = 12
     # num_workers = 0
     num_workers = 32
     evaluate_step_frequency = 1000
@@ -117,8 +117,8 @@ def train(args):
     )
 
     # Load checkpoint
-    enc_model_name = "CRnn3"
-    checkpoint_path = Path("checkpoints/train/{}/step=90000.pth".format(enc_model_name))
+    enc_model_name = "CRnn3_onset_offset_vel"
+    checkpoint_path = Path("checkpoints/train/{}/step=100000.pth".format(enc_model_name))
     enc_model = get_model(enc_model_name)
     enc_model.load_state_dict(torch.load(checkpoint_path))
     enc_model.to(device)
@@ -130,7 +130,7 @@ def train(args):
         n_layer=6, 
         n_head=16, 
         n_embd=1024, 
-        audio_n_embd=1024
+        audio_n_embd=4096
     )
 
     model = AudioLlamaQA(config)
@@ -160,7 +160,7 @@ def train(args):
 
         enc_model.train()
         model.train()
-        audio_emb = enc_model(audio)["onset_emb"]
+        audio_emb = enc_model(audio)["emb"]
         logits, loss = model(audio_emb=audio_emb, idx=idx, target=target_token)
         
         loss.backward()
@@ -271,7 +271,7 @@ def validate(enc_model, model, dataloader):
 
         with torch.no_grad():
             enc_model.eval()
-            audio_emb = enc_model(audio)["onset_emb"]
+            audio_emb = enc_model(audio)["emb"]
 
         with torch.no_grad():
             model.eval()

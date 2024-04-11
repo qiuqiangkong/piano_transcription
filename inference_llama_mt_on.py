@@ -100,8 +100,8 @@ def inference_in_batch(args):
     # idx = tokenizer.stoi("<sos>")
     # idx = torch.LongTensor(idx * np.ones((batch_size, 1))).to(device)
 
-    for audio_idx in range(len(audio_paths)):
-    # for audio_idx in range(110, len(audio_paths)):
+    # for audio_idx in range(len(audio_paths)):
+    for audio_idx in range(110, len(audio_paths)):
 
         print(audio_idx)
         t1 = time.time()
