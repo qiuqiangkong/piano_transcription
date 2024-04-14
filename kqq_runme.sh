@@ -35,6 +35,12 @@ CUDA_VISIBLE_DEVICES=1 python inference_llama_mt_off.py
 # train_llama_mt_on2.py  on_off_frame_vel emb
 # train_llama_mt_off_b.py   off emb
 # train_llama_mt_off3.py  no pedal extension
-# train_llama_mt_off4.py  Batch cond
-# + inference_llama_mt_off4b.py  Batch cond 
+# + train_llama_mt_off4.py  Batch cond
+# + inference_llama_mt_off4b.py  Batch cond inference, works
 
+# train_llama_mt_on3.py  CRnn 10s
+# train_llama_mt_on4.py  CRnn 10s, onoffvel_emb, onset
+# train_llama_mt_off5.py  CRnn 10s, onoffvel_emb, offset
+# train_llama_mt_vel2.py  CRnn 10s, onoffvel_emb, vel
+
+# MaestroMultiTask4()
