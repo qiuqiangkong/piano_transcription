@@ -1,5 +1,7 @@
 import torch
 import torch.nn.functional as F
+import lightning as L
+import torch.distributed as dist
 import time
 import random
 import librosa
@@ -8,17 +10,18 @@ import soundfile
 import matplotlib.pyplot as plt
 from pathlib import Path
 import torch.optim as optim
-from data.maestro import Maestro, MaestroMultiTask4
+from data.maestro import Maestro, MaestroMultiTask5
 from data.collate import collate_fn
 from data.io import events_to_notes
 from models.crnn import CRnn
+from models_bd.models import Note_pedal
 from tqdm import tqdm
 import museval
 import argparse
 import wandb
 
 from data.tokenizers import Tokenizer2
-from models.audiollama_qa import LLaMAConfig, AudioLlamaQA
+from models.enc_dec import EncDecConfig, EncDecPos
 
 
 def train(args):
@@ -27,28 +30,29 @@ def train(args):
     # model_name = args.model_name
 
     # Default parameters
-    device = "cuda"
+    device = "cuda" 
     # batch_size = 16
-    batch_size = 5
+    batch_size_per_deivce = 3
     # num_workers = 0
     num_workers = 32
     evaluate_step_frequency = 1000
-    save_step_frequency = 10000
+    save_step_frequency = 20000
     training_steps = 300000
     debug = False
     filename = Path(__file__).stem
     segment_seconds = 10.
     lr = 1e-4
     frames_num = 1001
-    question_token_len = 1024
-    answer_token_len = 512
-    wandb_log = True
+    max_token_len = 1024
+    wandb_log = False
 
     model_name = "AudioLlama"
     checkpoints_dir = Path("./checkpoints", filename, model_name)
     
-    # root = "/datasets/maestro-v2.0.0/maestro-v2.0.0"
     root = "/datasets/maestro-v3.0.0/maestro-v3.0.0"
+
+    # Fabric
+    devices_num = torch.cuda.device_count()
 
     if wandb_log:
         wandb.init(
@@ -56,38 +60,39 @@ def train(args):
             name=filename
         )
 
+    fabric = L.Fabric(accelerator="cuda", devices=devices_num, strategy="ddp")
+    fabric.launch()
+
     tokenizer = Tokenizer2()
     
     # Dataset
-    train_dataset = MaestroMultiTask4(
+    train_dataset = MaestroMultiTask5(
         root=root,
         split="train",
         segment_seconds=segment_seconds,
         tokenizer=tokenizer,
-        question_token_len=question_token_len,
-        answer_token_len=answer_token_len,
-        task="velocity"
+        max_token_len=max_token_len,
+        task="onset"
     )
 
-    test_dataset = MaestroMultiTask4(
+    test_dataset = MaestroMultiTask5(
         root=root,
         split="test",
         segment_seconds=segment_seconds,
         tokenizer=tokenizer,
-        question_token_len=question_token_len,
-        answer_token_len=answer_token_len,
-        task="velocity"
+        max_token_len=max_token_len,
+        task="onset"
     )
 
     # Sampler
-    train_sampler = Sampler(dataset_size=len(train_dataset))
+    train_sampler = DistributedSampler(dataset_size=len(train_dataset))
     eval_train_sampler = Sampler(dataset_size=len(train_dataset))
     eval_test_sampler = Sampler(dataset_size=len(test_dataset))
 
     # Dataloader
     train_dataloader = torch.utils.data.DataLoader(
         dataset=train_dataset, 
-        batch_size=batch_size, 
+        batch_size=batch_size_per_deivce, 
         sampler=train_sampler,
         collate_fn=collate_fn,
         num_workers=num_workers, 
@@ -96,7 +101,7 @@ def train(args):
 
     eval_train_dataloader = torch.utils.data.DataLoader(
         dataset=train_dataset, 
-        batch_size=batch_size, 
+        batch_size=batch_size_per_deivce, 
         sampler=eval_train_sampler,
         collate_fn=collate_fn,
         num_workers=0, 
@@ -105,7 +110,7 @@ def train(args):
 
     eval_test_dataloader = torch.utils.data.DataLoader(
         dataset=test_dataset, 
-        batch_size=batch_size, 
+        batch_size=batch_size_per_deivce, 
         sampler=eval_test_sampler,
         collate_fn=collate_fn,
         num_workers=0, 
@@ -115,27 +120,28 @@ def train(args):
 
     # adsf
     # Load checkpoint
-    enc_model_name = "Note_pedal"
-    checkpoint_path = Path("Note_pedal.pth")
-    enc_model = get_model(enc_model_name)
-    enc_model.load_state_dict2(torch.load(checkpoint_path)["model"])
-    enc_model.to(device)
-
-    config = LLaMAConfig(
-        block_size=frames_num + question_token_len + answer_token_len + 1, 
+    config = EncDecConfig(
+        block_size=max_token_len + 1, 
         vocab_size=tokenizer.vocab_size, 
         padded_vocab_size=tokenizer.vocab_size, 
-        n_layer=6, 
+        n_layer=12, 
         n_head=16, 
         n_embd=1024, 
-        audio_n_embd=264
+        audio_n_embd=1536
     )
 
-    model = AudioLlamaQA(config)
-    model.to(device)
-
+    full_model = FullModel(config)
+    checkpoint_path = Path("Note_pedal.pth")
+    full_model.encoder.load_state_dict2(torch.load(checkpoint_path)["model"])
+    
     # Optimizer
-    optimizer = optim.AdamW(list(enc_model.parameters()) + list(model.parameters()), lr=lr)
+    optimizer = optim.AdamW(full_model.parameters(), lr=lr)
+
+    full_model, optimizer = fabric.setup(full_model, optimizer)
+
+    train_dataloader = fabric.setup_dataloaders(train_dataloader, use_distributed_sampler=False)
+    eval_train_dataloader = fabric.setup_dataloaders(eval_train_dataloader, use_distributed_sampler=False)
+    eval_test_dataloader = fabric.setup_dataloaders(eval_test_dataloader, use_distributed_sampler=False)
 
     # Create checkpoints directory
     Path(checkpoints_dir).mkdir(parents=True, exist_ok=True)
@@ -144,13 +150,12 @@ def train(args):
 
     # Train
     for step, data in enumerate(tqdm(train_dataloader)):
-        
-        audio = data["audio"].to(device)
-        question_token = data["question_token"].to(device)
-        answer_token = data["answer_token"][:, 0 : -1].to(device)
-        target_token = data["answer_token"][:, 1 :].to(device)
 
-        idx = torch.cat((question_token, answer_token), dim=1)
+        audio = data["audio"]
+        input_token = data["token"][:, 0 : -1]
+        target_token = data["token"][:, 1 :]
+        target_mask = data["mask"][:, 1 :]
+
 
         # Play the audio.
         if debug:
@@ -158,16 +163,18 @@ def train(args):
 
         optimizer.zero_grad()
 
-        enc_model.train()
-        model.train()
-        audio_emb = enc_model(audio)["onoffvel_emb"]
-        logits, loss = model(audio_emb=audio_emb, idx=idx, target=target_token)
+        full_model.train()
+        audio_emb = full_model.encoder(audio)["onoffvel_emb_h"]
+        logits, loss = full_model.decoder(audio_emb=audio_emb, idx=input_token, target=target_token, target_mask=target_mask)
         
-        loss.backward()
-        optimizer.step()
+        with torch.autograd.set_detect_anomaly(True):
+            fabric.backward(loss)
 
-        # from IPython import embed; embed(using=False); os._exit(0)
+        optimizer.step()
+        asdf
         
+
+        '''
         if step % evaluate_step_frequency == 0:
             print("Evaluating ...")
             train_loss = validate(enc_model, model, eval_train_dataloader)
@@ -181,6 +188,7 @@ def train(args):
                     "train loss": train_loss,
                     "test loss": test_loss
                 })
+        '''
 
         # Save model
         if step % save_step_frequency == 0:
@@ -206,6 +214,15 @@ def train(args):
         # if step == 1000:
         #     from IPython import embed; embed(using=False); os._exit(0)
         #     hist, bin_edges = np.histogram(tmp)
+
+
+class FullModel(torch.nn.Module):
+    def __init__(self, config):
+        super().__init__()
+
+        # Group all models under a common nn.Module
+        self.encoder = Note_pedal()
+        self.decoder = EncDecPos(config)
 
 
 def get_model(model_name):
@@ -251,6 +268,31 @@ class Sampler:
             yield index
 
 
+class DistributedSampler:
+    def __init__(self, dataset_size):
+
+        self.world_size = dist.get_world_size()
+        self.rank = dist.get_rank()
+        
+        self.indexes = list(range(dataset_size))
+        random.shuffle(self.indexes)
+        
+    def __iter__(self):
+
+        pointer = 0
+
+        while True:
+
+            if pointer + self.rank >= len(self.indexes):
+                random.shuffle(self.indexes)
+                pointer = 0
+                
+            index = self.indexes[pointer + self.rank]
+            pointer += self.world_size
+
+            yield index
+
+
 def bce_loss(output, target):
     return F.binary_cross_entropy(output, target)
 
@@ -261,7 +303,7 @@ def play_audio(mixture, target):
     from IPython import embed; embed(using=False); os._exit(0)
 
 
-def validate(enc_model, model, dataloader): 
+def validate(enc_model, model, dataloader):
 
     pred_ids = []
     target_ids = []
@@ -274,19 +316,17 @@ def validate(enc_model, model, dataloader):
             break
 
         audio = data["audio"].to(device)
-        question_token = data["question_token"].to(device)
-        answer_token = data["answer_token"][:, 0 : -1].to(device)
-        target_token = data["answer_token"][:, 1 :].to(device)
-
-        idx = torch.cat((question_token, answer_token), dim=1)
+        input_token = data["token"][:, 0 : -1].to(device)
+        target_token = data["token"][:, 1 :].to(device)
+        target_mask = data["mask"][:, 1 :].to(device)
 
         with torch.no_grad():
             enc_model.eval()
-            audio_emb = enc_model(audio)["onoffvel_emb"]
+            audio_emb = enc_model(audio)["onoffvel_emb_h"]
 
         with torch.no_grad():
             model.eval()
-            logits, loss = model(audio_emb=audio_emb, idx=idx, target=target_token)
+            logits, loss = model(audio_emb=audio_emb, idx=input_token, target=target_token, target_mask=target_mask)
 
         losses.append(loss.item())
 

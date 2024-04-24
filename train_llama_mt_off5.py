@@ -40,8 +40,8 @@ def train(args):
     segment_seconds = 10.
     lr = 1e-4
     frames_num = 1001
-    question_token_len = 20
-    answer_token_len = 1024
+    question_token_len = 1024
+    answer_token_len = 512
     wandb_log = True
 
     model_name = "AudioLlama"

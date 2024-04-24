@@ -21,7 +21,7 @@ import mir_eval
 import re
 
 from data.tokenizers import Tokenizer2
-from models.audiollama_qa import LLaMAConfig, AudioLlamaQA
+from models.enc_dec import EncDecConfig, EncDecPos
 from data.maestro import MaestroStringProcessor
 from data.io import events_to_notes, notes_to_midi, read_single_track_midi, write_notes_to_midi, fix_length
 
@@ -39,15 +39,14 @@ def inference_in_batch(args):
     top_k = 1
     batch_size = 15
     frames_num = 1001
-    question_token_len = 20
-    answer_token_len = 1024
+    max_token_len = 1024
     segment_samples = int(segment_seconds * sample_rate)
 
     tokenizer = Tokenizer2()
 
     # Load checkpoint
     enc_model = Note_pedal()
-    checkpoint_path = Path("checkpoints/train_llama_mt_on4/AudioLlama/step=100000_encoder.pth")
+    checkpoint_path = Path("checkpoints/train_llama_mt_on7/AudioLlama/step=80000_encoder.pth") 
     enc_model.load_state_dict(torch.load(checkpoint_path))
     enc_model.to(device)
 
@@ -55,24 +54,25 @@ def inference_in_batch(args):
         param.requires_grad = False
 
     # Load checkpoint
-    checkpoint_path = Path("checkpoints/train_llama_mt_on4/AudioLlama/step=100000.pth")
-    config = LLaMAConfig(
-        block_size=frames_num + question_token_len + answer_token_len + 1, 
+    checkpoint_path = Path("checkpoints/train_llama_mt_on7/AudioLlama/step=80000.pth")
+    config = EncDecConfig(
+        block_size=max_token_len + 1, 
         vocab_size=tokenizer.vocab_size, 
         padded_vocab_size=tokenizer.vocab_size, 
         n_layer=6, 
         n_head=16, 
         n_embd=1024, 
-        audio_n_embd=264
+        audio_n_embd=1536
     )
-    model = AudioLlamaQA(config)
+    model = EncDecPos(config)
     model.load_state_dict(torch.load(checkpoint_path))
     model.to(device)
 
     # Data
     root = "/datasets/maestro-v3.0.0/maestro-v3.0.0"
     meta_csv = Path(root, "maestro-v3.0.0.csv")
-    meta_data = load_meta(meta_csv, split="test")
+    meta_data = load_meta(meta_csv, split="test") 
+    # meta_data = load_meta(meta_csv, split="train")
     audio_paths = [Path(root, name) for name in meta_data["audio_filename"]]
     midi_paths = [Path(root, name) for name in meta_data["midi_filename"]]
 
@@ -102,7 +102,7 @@ def inference_in_batch(args):
     # idx = torch.LongTensor(idx * np.ones((batch_size, 1))).to(device)
 
     for audio_idx in range(len(audio_paths)):
-    # for audio_idx in range(110, len(audio_paths)):
+    # for audio_idx in range(3, len(audio_paths)):
 
         print(audio_idx)
         t1 = time.time()
@@ -116,29 +116,18 @@ def inference_in_batch(args):
 
         audio_samples = audio.shape[-1]
         bgn = 0
+        # bgn = 380 * sample_rate
         segment_samples = int(segment_seconds * sample_rate)
         clip_samples = segment_samples * batch_size
 
         ##
-        question_strings = [
+        strings = [
             "<sos>",
             "task=onset",
-            "<eos>",
         ]
-        question_tokens = tokenizer.strings_to_tokens(question_strings)
-        question_tokens = np.array(fix_length(
-            x=question_tokens, 
-            max_len=question_token_len, 
-            constant_value=tokenizer.stoi("<pad>")
-        ))
-        question_tokens = np.repeat(question_tokens[None, :], repeats=batch_size, axis=0)
-        question_tokens = torch.LongTensor(question_tokens).to(device)
-
-        answer_tokens = np.array([tokenizer.stoi("<sos>")])
-        answer_tokens = np.repeat(answer_tokens[None, :], repeats=batch_size, axis=0)
-        answer_tokens = torch.LongTensor(answer_tokens).to(device)
-        
-        idx = torch.cat((question_tokens, answer_tokens), dim=1)
+        tokens = tokenizer.strings_to_tokens(strings)
+        tokens = np.repeat(np.array(tokens)[None, :], repeats=batch_size, axis=0)
+        tokens = torch.LongTensor(tokens).to(device)
 
         all_notes = []
 
@@ -156,16 +145,15 @@ def inference_in_batch(args):
 
             with torch.no_grad():
                 enc_model.eval()
-                audio_emb = enc_model(segments)["onoffvel_emb"]
+                audio_emb = enc_model(segments)["onoffvel_emb_h"]
 
             # 
             with torch.no_grad():
                 model.eval()
                 pred_tokens = model.generate_in_batch(
                     audio_emb=audio_emb, 
-                    idx=idx, 
-                    max_new_tokens=answer_token_len,
-                    # max_new_tokens=300,
+                    idx=tokens, 
+                    max_new_tokens=1000,
                     end_token=tokenizer.stoi("<eos>")
                 ).data.cpu().numpy()
 
@@ -174,8 +162,8 @@ def inference_in_batch(args):
                         if token == tokenizer.stoi("<eos>"):
                             break                    
 
-                    new_pred_tokens = pred_tokens[k, 0 : i + 1]
-
+                    new_pred_tokens = pred_tokens[k, 1 : i + 1]
+                    # from IPython import embed; embed(using=False); os._exit(0)
                     strings = tokenizer.tokens_to_strings(new_pred_tokens)
                     events = onset_strings_to_events(strings)
                     notes = events_to_notes(events)
@@ -197,7 +185,7 @@ def inference_in_batch(args):
         
         ref_midi_path = midi_paths[audio_idx]
         ref_intervals, ref_pitches, ref_vels = parse_midi(ref_midi_path)
-        est_intervals, est_pitches, est_vels = parse_midi(est_midi_path)
+        est_intervals, est_pitches, est_vels = parse_midi(est_midi_path) 
 
         note_precision, note_recall, note_f1, _ = \
         mir_eval.transcription.precision_recall_f1_overlap(

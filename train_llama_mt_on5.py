@@ -8,7 +8,7 @@ import soundfile
 import matplotlib.pyplot as plt
 from pathlib import Path
 import torch.optim as optim
-from data.maestro import Maestro, MaestroMultiTask4
+from data.maestro import Maestro, MaestroMultiTask5
 from data.collate import collate_fn
 from data.io import events_to_notes
 from models.crnn import CRnn
@@ -18,7 +18,7 @@ import argparse
 import wandb
 
 from data.tokenizers import Tokenizer2
-from models.audiollama_qa import LLaMAConfig, AudioLlamaQA
+from models.audiollama_qa import LLaMAConfig, AudioLlamaQA, AudioLlamaQA_mask
 
 
 def train(args):
@@ -40,9 +40,8 @@ def train(args):
     segment_seconds = 10.
     lr = 1e-4
     frames_num = 1001
-    question_token_len = 1024
-    answer_token_len = 512
-    wandb_log = True
+    max_token_len = 1024
+    wandb_log = False
 
     model_name = "AudioLlama"
     checkpoints_dir = Path("./checkpoints", filename, model_name)
@@ -59,24 +58,22 @@ def train(args):
     tokenizer = Tokenizer2()
     
     # Dataset
-    train_dataset = MaestroMultiTask4(
+    train_dataset = MaestroMultiTask5(
         root=root,
         split="train",
         segment_seconds=segment_seconds,
         tokenizer=tokenizer,
-        question_token_len=question_token_len,
-        answer_token_len=answer_token_len,
-        task="velocity"
+        max_token_len=max_token_len,
+        task="onset"
     )
 
-    test_dataset = MaestroMultiTask4(
+    test_dataset = MaestroMultiTask5(
         root=root,
         split="test",
         segment_seconds=segment_seconds,
         tokenizer=tokenizer,
-        question_token_len=question_token_len,
-        answer_token_len=answer_token_len,
-        task="velocity"
+        max_token_len=max_token_len,
+        task="onset"
     )
 
     # Sampler
@@ -122,7 +119,7 @@ def train(args):
     enc_model.to(device)
 
     config = LLaMAConfig(
-        block_size=frames_num + question_token_len + answer_token_len + 1, 
+        block_size=frames_num + max_token_len + 1, 
         vocab_size=tokenizer.vocab_size, 
         padded_vocab_size=tokenizer.vocab_size, 
         n_layer=6, 
@@ -131,7 +128,7 @@ def train(args):
         audio_n_embd=264
     )
 
-    model = AudioLlamaQA(config)
+    model = AudioLlamaQA_mask(config)
     model.to(device)
 
     # Optimizer
@@ -144,13 +141,11 @@ def train(args):
 
     # Train
     for step, data in enumerate(tqdm(train_dataloader)):
-        
-        audio = data["audio"].to(device)
-        question_token = data["question_token"].to(device)
-        answer_token = data["answer_token"][:, 0 : -1].to(device)
-        target_token = data["answer_token"][:, 1 :].to(device)
 
-        idx = torch.cat((question_token, answer_token), dim=1)
+        audio = data["audio"].to(device)
+        input_token = data["token"][:, 0 : -1].to(device)
+        target_token = data["token"][:, 1 :].to(device)
+        target_mask = data["mask"][:, 1 :].to(device)
 
         # Play the audio.
         if debug:
@@ -161,12 +156,13 @@ def train(args):
         enc_model.train()
         model.train()
         audio_emb = enc_model(audio)["onoffvel_emb"]
-        logits, loss = model(audio_emb=audio_emb, idx=idx, target=target_token)
+        logits, loss = model(audio_emb=audio_emb, idx=input_token, target=target_token, target_mask=target_mask)
         
         loss.backward()
-        optimizer.step()
 
-        # from IPython import embed; embed(using=False); os._exit(0)
+        optimizer.step()
+        
+
         
         if step % evaluate_step_frequency == 0:
             print("Evaluating ...")
@@ -181,6 +177,7 @@ def train(args):
                     "train loss": train_loss,
                     "test loss": test_loss
                 })
+        
 
         # Save model
         if step % save_step_frequency == 0:
@@ -261,7 +258,7 @@ def play_audio(mixture, target):
     from IPython import embed; embed(using=False); os._exit(0)
 
 
-def validate(enc_model, model, dataloader): 
+def validate(enc_model, model, dataloader):
 
     pred_ids = []
     target_ids = []
@@ -274,11 +271,9 @@ def validate(enc_model, model, dataloader):
             break
 
         audio = data["audio"].to(device)
-        question_token = data["question_token"].to(device)
-        answer_token = data["answer_token"][:, 0 : -1].to(device)
-        target_token = data["answer_token"][:, 1 :].to(device)
-
-        idx = torch.cat((question_token, answer_token), dim=1)
+        input_token = data["token"][:, 0 : -1].to(device)
+        target_token = data["token"][:, 1 :].to(device)
+        target_mask = data["mask"][:, 1 :].to(device)
 
         with torch.no_grad():
             enc_model.eval()
@@ -286,7 +281,7 @@ def validate(enc_model, model, dataloader):
 
         with torch.no_grad():
             model.eval()
-            logits, loss = model(audio_emb=audio_emb, idx=idx, target=target_token)
+            logits, loss = model(audio_emb=audio_emb, idx=input_token, target=target_token, target_mask=target_mask)
 
         losses.append(loss.item())
 
