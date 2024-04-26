@@ -46,7 +46,7 @@ def inference_in_batch(args):
 
     # Load checkpoint
     enc_model = Note_pedal()
-    checkpoint_path = Path("checkpoints/train_llama_mt_on7/AudioLlama/step=80000_encoder.pth") 
+    checkpoint_path = Path("checkpoints/train_llama_mt_on7/AudioLlama/step=250000_encoder.pth") 
     enc_model.load_state_dict(torch.load(checkpoint_path))
     enc_model.to(device)
 
@@ -54,7 +54,7 @@ def inference_in_batch(args):
         param.requires_grad = False
 
     # Load checkpoint
-    checkpoint_path = Path("checkpoints/train_llama_mt_on7/AudioLlama/step=80000.pth")
+    checkpoint_path = Path("checkpoints/train_llama_mt_on7/AudioLlama/step=250000.pth")
     config = EncDecConfig(
         block_size=max_token_len + 1, 
         vocab_size=tokenizer.vocab_size, 
@@ -102,7 +102,7 @@ def inference_in_batch(args):
     # idx = torch.LongTensor(idx * np.ones((batch_size, 1))).to(device)
 
     for audio_idx in range(len(audio_paths)):
-    # for audio_idx in range(3, len(audio_paths)):
+    # for audio_idx in range(44, len(audio_paths)):
 
         print(audio_idx)
         t1 = time.time()
@@ -116,7 +116,7 @@ def inference_in_batch(args):
 
         audio_samples = audio.shape[-1]
         bgn = 0
-        # bgn = 380 * sample_rate
+        # bgn = 150 * sample_rate
         segment_samples = int(segment_seconds * sample_rate)
         clip_samples = segment_samples * batch_size
 
@@ -156,6 +156,14 @@ def inference_in_batch(args):
                     max_new_tokens=1000,
                     end_token=tokenizer.stoi("<eos>")
                 ).data.cpu().numpy()
+                # pred_tokens = model.generate_in_batch_avoid_repeat(
+                #     audio_emb=audio_emb, 
+                #     idx=tokens, 
+                #     max_new_tokens=1000,
+                #     end_token=tokenizer.stoi("<eos>"),
+                #     tokenizer=tokenizer
+                # ).data.cpu().numpy()
+                # from IPython import embed; embed(using=False); os._exit(0)
 
                 for k in range(pred_tokens.shape[0]):
                     for i, token in enumerate(pred_tokens[k]):

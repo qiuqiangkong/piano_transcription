@@ -12,6 +12,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 from typing_extensions import Self
 import numpy as np
+import re
 
 # from kqq_models.utils import find_multiple
 
@@ -355,6 +356,123 @@ class EncDecPos(nn.Module):
                 break
 
         return idx[:, question_len - 1 :]
+
+    @torch.no_grad()
+    def generate_in_batch_avoid_repeat(self, audio_emb, idx, max_new_tokens, end_token, tokenizer):
+        """
+        Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
+        the sequence max_new_tokens times, feeding the predictions back into the model each time.
+        Most likely you'll want to make sure to be in model.eval() mode of operation for this.
+        """
+
+        device = audio_emb.device
+        batch_size = idx.shape[0]
+        question_len = idx.shape[1]
+        batch_size = audio_emb.shape[0]
+        finish_flags = [False] * batch_size
+        go_backs = [False] * batch_size
+        # go_back = False
+
+
+        buffer = [[] for _ in range(batch_size)]
+        notes = [{} for _ in range(batch_size)]
+        tops = [0 for _ in range(batch_size)]
+        
+        i = 0
+        # for i in range(max_new_tokens):
+        # while i < max_new_tokens:
+        while idx.shape[1] < max_new_tokens:
+
+            # print(i)
+            # print(idx.shape[1])
+
+            idx_cond = idx
+            logits, _ = self(audio_emb, idx_cond)
+            # idx_next = torch.argmax(logits, dim=-1)
+            _, sort_idxes = torch.sort(logits, dim=-1, descending=True)
+
+            # idx_next = torch.zeros(batch_size).to(device)
+            idx_next = []
+            for k in range(batch_size):
+                # idx_next[k] = sort_idxes[k, 0, tops[k]]
+                idx_next.append(sort_idxes[k, 0, tops[k]])
+            idx_next = torch.LongTensor(idx_next)[:, None].to(device)
+
+            #
+            for k in range(batch_size):
+
+                if finish_flags[k] is True:
+                    continue
+
+                w = tokenizer.itos(idx_next[k, 0].item())
+
+                if "=" in w:
+                    key = re.search('(.*)=', w).group(1)
+                    value = re.search('{}=(.*)'.format(key), w).group(1)
+                    value = self.format_value(key, value)
+
+                    notes[k][key] = value
+                    if key == "pitch":
+                        
+                        if self.is_repeat(notes[k], buffer[k]):
+                            tops[k] += 1
+                            notes[k] = {}
+                            go_backs[k] = True
+
+                        else:
+                            tops[k] = 0
+                            buffer[k].append(notes[k])
+                            notes[k] = {}
+                            go_backs[k] = False
+
+            if np.sum(go_backs) > 0:
+                
+                for k in range(batch_size):
+                    buffer[k] = buffer[k][0 : -1]
+
+                idx = idx[:, 0 : -1]
+                continue
+                
+            else:
+                idx = torch.cat((idx, idx_next), dim=1)
+
+            for k in range(batch_size):
+                if idx_next[k, 0] == end_token:
+                    finish_flags[k] = True
+
+            if np.sum(finish_flags) == batch_size:
+                break
+
+            # i += 1
+
+            # if i == 10:
+            #     break
+
+        # from IPython import embed; embed(using=False); os._exit(0)
+        return idx[:, question_len - 1 :]
+
+    def format_value(self, key, value):
+        if key in ["time"]:
+            return float(value)
+
+        elif key in ["pitch", "velocity"]:
+            return int(value)
+
+        else:
+            return value
+
+    def is_repeat(self, note, list_notes):
+
+        try:
+            for e in list_notes:
+                if e["pitch"] == note["pitch"]:
+                    if note["time"] - e["time"] < 0.05:
+                        return True
+        except:
+            from IPython import embed; embed(using=False); os._exit(0)
+
+        return False
+
 
     @classmethod
     def from_name(cls, name: str) -> Self:
