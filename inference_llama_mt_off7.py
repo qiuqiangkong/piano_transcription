@@ -46,7 +46,7 @@ def inference_in_batch(args):
 
     # Load checkpoint
     enc_model = Note_pedal()
-    checkpoint_path = Path("checkpoints/train_llama_mt_off7/AudioLlama/step=160000_encoder.pth") 
+    checkpoint_path = Path("checkpoints/train_llama_mt_off7/AudioLlama/step=200000_encoder.pth") 
     enc_model.load_state_dict(torch.load(checkpoint_path))
     enc_model.to(device)
 
@@ -54,7 +54,7 @@ def inference_in_batch(args):
         param.requires_grad = False
 
     # Load checkpoint
-    checkpoint_path = Path("checkpoints/train_llama_mt_off7/AudioLlama/step=160000.pth")
+    checkpoint_path = Path("checkpoints/train_llama_mt_off7/AudioLlama/step=200000.pth")
     config = EncDecConfig(
         block_size=max_token_len + 1, 
         vocab_size=tokenizer.vocab_size, 
@@ -99,6 +99,9 @@ def inference_in_batch(args):
     off_precs = []
     off_recalls = []
     off_f1s = []
+    off_vel_precs = []
+    off_vel_recalls = []
+    off_vel_f1s = []
 
     for audio_idx in range(len(audio_paths)):
     # for audio_idx in range(44, len(audio_paths)):
@@ -303,10 +306,22 @@ def inference_in_batch(args):
         vel_recalls.append(note_recall)
         vel_f1s.append(note_f1)
 
-        # from IPython import embed; embed(using=False); os._exit(0)
-        mir_eval.transcription.precision_recall_f1_overlap(ref_intervals=ref_intervals, ref_pitches=ref_pitches, est_intervals=est_intervals, est_pitches=est_pitches, onset_tolerance=1., offset_ratio=0.2)
+        # eval with vel
+        note_precision, note_recall, note_f1, _ = \
+           mir_eval.transcription_velocity.precision_recall_f1_overlap(
+               ref_intervals=ref_intervals,
+               ref_pitches=ref_pitches,
+               ref_velocities=ref_vels,
+               est_intervals=est_intervals,
+               est_pitches=est_pitches,
+               est_velocities=est_vels,
+               offset_ratio=0.2,
+               )
 
-        break
+        print("        P: {:.3f}, R: {:.3f}, F1: {:.3f}, time: {:.3f} s".format(note_precision, note_recall, note_f1, time.time() - t1))
+        off_vel_precs.append(note_precision)
+        off_vel_recalls.append(note_recall)
+        off_vel_f1s.append(note_f1)
 
     print("--- Onset -------")
     print("Avg Prec: {:.3f}".format(np.mean(precs)))
@@ -320,6 +335,10 @@ def inference_in_batch(args):
     print("Avg Prec: {:.3f}".format(np.mean(off_precs)))
     print("Avg Recall: {:.3f}".format(np.mean(off_recalls)))
     print("Avg F1: {:.3f}".format(np.mean(off_f1s)))
+    print("--- Onset + Off + Vel -------")
+    print("Avg Prec: {:.3f}".format(np.mean(off_vel_precs)))
+    print("Avg Recall: {:.3f}".format(np.mean(off_vel_recalls)))
+    print("Avg F1: {:.3f}".format(np.mean(off_vel_f1s)))
 
 
 def load_meta(meta_csv, split):
