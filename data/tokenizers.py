@@ -1,346 +1,167 @@
 import re
 import numpy as np
+from typing import List
+import bisect
+import itertools
 
 
-'''
 class BaseTokenizer:
-    def __init__(self, strings, vocab_size=None):
-        
-        self.strings = strings
-        
-        if vocab_size:
-            self.vocab_size = vocab_size
-        else:
-            self.vocab_size = len(self.strings)
+    r"""Base class for all tokenizers.
+    """
 
-        self.token_to_string = {token: string for token, string in enumerate(self.strings)}
-        self.string_to_token = {string: token for token, string in enumerate(self.strings)}
+    def __init__(self, words: str):
+        self.words = words
+        self.vocab_size = len(self.words)
+
+        self.token_to_word = {token: word for token, word in enumerate(self.words)}
+        self.word_to_token = {word: token for token, word in enumerate(self.words)}
+
+    def stoi(self, word: str) -> int:
+        r"""String (word) to index.
+        """
+        if word in self.words:
+            return self.word_to_token[word]
         
-    def itos(self, token):
+    def itos(self, token: int) -> str:
+        r"""Index to string (word).
+        """
         assert 0 <= token < self.vocab_size
-        return self.token_to_string[token]
-
-    def stoi(self, string):
-        if string in self.strings:
-            return self.string_to_token[string]
-'''
-class BaseTokenizer:
-    def __init__(self, strings):
-        
-        self.strings = strings
-        self.vocab_size = len(self.strings)
-
-        self.token_to_string = {token: string for token, string in enumerate(self.strings)}
-        self.string_to_token = {string: token for token, string in enumerate(self.strings)}
-        
-    def itos(self, token):
-        assert 0 <= token < self.vocab_size
-        return self.token_to_string[token]
-
-    def stoi(self, string):
-        if string in self.strings:
-            return self.string_to_token[string]
+        return self.token_to_word[token]
 
 
 class SpecialTokenizer(BaseTokenizer):
     def __init__(self):
-        strings = ["<pad>", "<sos>", "<eos>", "<unk>"]
-        BaseTokenizer.__init__(self, strings)
+        words = ["<pad>", "<sos>", "<eos>", "<unk>"]
+        super().__init__(words=words)
         
 
 class NameTokenizer(BaseTokenizer):
     def __init__(self):
-        strings = [
+        words = [
             "note_on", "note_off", "note_sustain",
             "pedal_on", "pedal_off", "pedal_sustain",
             "beat", "downbeat",
         ]
-        strings = ["name={}".format(s) for s in strings]
-        BaseTokenizer.__init__(self, strings)
-        self.vocab_size = 100
+        words = ["name={}".format(w) for w in words]
+
+        vocab_size = 16  # Reserve for future
+        words = pad_list(words, vocab_size)
+
+        super().__init__(words=words)
 
 
-class TimeTokenizer:
-    def __init__(self):
-        self.vocab_size = 6001
-        self.frames_per_second = 100
+def pad_list(x: List, max_len: int) -> List:
+    assert len(x) <= max_len
+    while len(x) < max_len:
+        x.append("blank_{}".format(len(x)))
+    return x
 
-    def itos(self, token):
-        assert 0 <= token < self.vocab_size
 
-        time = token / self.frames_per_second
-        string = "time={}".format(time)
-        return string
+class TimeTokenizer(BaseTokenizer):
+    def __init__(self, max_duration=60., fps=100):
 
-    def stoi(self, string):
-        if "time=" in string:
-            time = float(re.search('time=(.*)', string).group(1))
-            token = round(time * self.frames_per_second)
+        self.fps = fps
+        self.delta_t = 1. / fps
+
+        words = ["time={:.4f}".format(time) for time in \
+            np.arange(0, max_duration + self.delta_t, self.delta_t)]
+
+        super().__init__(words=words) 
+
+
+    def stoi(self, word: str) -> int:
+
+        if "time=" in word:
+            time = float(re.search('time=(.*)', word).group(1))
+            time = round(time * self.fps) / self.fps
+            word = "time={:.4f}".format(time)
+            token = super().stoi(word)
             return token
+    
 
-'''
-class MidiProgramTokenizer:
-    def __init__(self):
-        self.vocab_size = 128
+class PitchTokenizer(BaseTokenizer):
+    def __init__(self, classes_num=128):
 
-    def itos(self, token):
-        assert 0 <= token < self.vocab_size
+        words = ["pitch={}".format(pitch) for pitch in range(classes_num)]
 
-        string = "inst={}".format(token)
-        return string
+        super().__init__(words=words)
 
-    def stoi(self, string):
-        if "inst=" in string:
-            token = int(re.search('inst=(.*)', string).group(1))
-            return token
-'''
+    
+class VelocityTokenizer(BaseTokenizer):
+    def __init__(self, classes_num=128):
+        
+        words = ["velocity={}".format(pitch) for pitch in range(classes_num)]
 
-class MaestroLabelTokenizer(BaseTokenizer):
-    def __init__(self):
-        strings = [
-            "Piano",
-        ]
-        strings = ["label=maestro-{}".format(s) for s in strings]
-
-        BaseTokenizer.__init__(self, strings)
+        super().__init__(words=words)
 
 
-class Slakh2100LabelTokenizer(BaseTokenizer):
-    def __init__(self):
-        strings = [
-            "Bass",
-            "Brass",
-            "Chromatic Percussion",
-            "Drums",
-            "Ethnic",
-            "Guitar",
-            "Organ",
-            "Percussive",
-            "Piano",
-            "Pipe",
-            "Reed",
-            "Sound Effects",
-            "Strings",
-            "Strings (continued)",
-            "Synth Lead",
-            "Synth Pad"
-        ]
-        strings = ["label=slakh2100-{}".format(s) for s in strings]
+class ConcatTokenizer:
+    def __init__(self, tokenizers, verbose=False):
 
-        BaseTokenizer.__init__(self, strings)
+        self.tokenizers = tokenizers
 
+        self.words = list(itertools.chain(*[tk.words for tk in tokenizers]))
+        self.vocab_sizes = [tk.vocab_size for tk in self.tokenizers]
+        self.vocab_size = np.sum(self.vocab_sizes)
 
-class GtzanLabelTokenizer(BaseTokenizer):
-    def __init__(self):
-
-        strings = ["blues", "classical", "country", "disco", "hiphop", "jazz", 
-            "metal", "pop", "reggae", "rock"]
-
-        strings = ["label=gtzan-{}".format(s) for s in strings]
-
-        BaseTokenizer.__init__(self, strings)
-
-
-class PitchTokenizer:
-    def __init__(self):
-        self.vocab_size = 128
-
-    def itos(self, token):
-        assert 0 <= token < self.vocab_size
-
-        string = "pitch={}".format(token)
-        return string
-
-    def stoi(self, string):
-        if "pitch=" in string:
-            token = int(re.search('pitch=(.*)', string).group(1))
-            return token
-
-
-class VelocityTokenizer:
-    def __init__(self):
-        self.vocab_size = 128
-
-    def itos(self, token):
-        assert 0 <= token < self.vocab_size
-
-        string = "velocity={}".format(token)
-        return string
-
-    def stoi(self, string):
-        if "velocity=" in string:
-            token = int(re.search('velocity=(.*)', string).group(1))
-            return token
-
-
-class BeatTokenizer:
-    def __init__(self):
-        self.vocab_size = 16
-
-    def itos(self, token):
-        assert 0 <= token < self.vocab_size
-
-        string = "beat_index={}".format(token)
-        return string
-
-    def stoi(self, string):
-        if "beat_index=" in string:
-            token = int(re.search('beat_index=(.*)', string).group(1))
-            return token
-
-
-class TaskTokenizer(BaseTokenizer):
-    def __init__(self):
-        strings = [
-            "onset", "offset", "velocity"
-        ]
-        strings = ["task={}".format(s) for s in strings]
-        BaseTokenizer.__init__(self, strings)
-        self.vocab_size = 100
-
-
-class Tokenizer:
-    def __init__(self, verbose=False):
-        self.tokenizers = [
-            SpecialTokenizer(),
-            NameTokenizer(), 
-            TimeTokenizer(), 
-            # MidiProgramTokenizer(),
-            MaestroLabelTokenizer(),
-            Slakh2100LabelTokenizer(),
-            GtzanLabelTokenizer(),
-            PitchTokenizer(),
-            VelocityTokenizer(),
-            BeatTokenizer(),
-        ]
-
-        self.vocab_size = np.sum([tokenizer.vocab_size for tokenizer in self.tokenizers])
+        self.cumulative_sizes = np.cumsum(self.vocab_sizes)
 
         if verbose:
             print("Vocab size: {}".format(self.vocab_size))
-            for tokenizer in self.tokenizers:
-                print(tokenizer.vocab_size)
+            for tk in self.tokenizers:
+                print(tk.vocab_size)
 
-    def itos(self, token):
-        assert 0 <= token < self.vocab_size
-
-        for tokenizer in self.tokenizers:
-            if token >= tokenizer.vocab_size:
-                token -= tokenizer.vocab_size
-            else:
-                break
-            
-        return tokenizer.itos(token)
-
-    def stoi(self, string):
+    def stoi(self, word: str) -> int:
         
         start_token = 0
 
-        for tokenizer in self.tokenizers:
+        for tk in self.tokenizers:
             
-            token = tokenizer.stoi(string)
+            token = tk.stoi(word)
             
             if token is not None:
                 return start_token + token
             else:
-                start_token += tokenizer.vocab_size
+                start_token += tk.vocab_size
 
-        raise NotImplementedError("{} is not supported!".format(string))
+        raise NotImplementedError("{} is not in the vocabulary!".format(word))
 
-    def strings_to_tokens(self, strings):
-
-        tokens = []
-
-        for string in strings:
-            tokens.append(self.stoi(string))
-
-        return tokens
-
-    def tokens_to_strings(self, tokens):
-
-        strings = []
-
-        for token in tokens:
-            strings.append(self.itos(token))
-
-        return strings
-
-
-class Tokenizer2:
-    def __init__(self, verbose=False):
-        self.tokenizers = [
-            SpecialTokenizer(),
-            NameTokenizer(), 
-            TimeTokenizer(), 
-            # MidiProgramTokenizer(),
-            MaestroLabelTokenizer(),
-            Slakh2100LabelTokenizer(),
-            GtzanLabelTokenizer(),
-            PitchTokenizer(),
-            VelocityTokenizer(),
-            BeatTokenizer(),
-            TaskTokenizer(),
-        ]
-
-        self.vocab_size = np.sum([tokenizer.vocab_size for tokenizer in self.tokenizers])
-
-        if verbose:
-            print("Vocab size: {}".format(self.vocab_size))
-            for tokenizer in self.tokenizers:
-                print(tokenizer.vocab_size)
-
-    def itos(self, token):
+    def itos(self, token: int) -> str:
+        
         assert 0 <= token < self.vocab_size
 
-        for tokenizer in self.tokenizers:
-            if token >= tokenizer.vocab_size:
-                token -= tokenizer.vocab_size
-            else:
-                break
-            
-        return tokenizer.itos(token)
+        tokenizer_idx = bisect.bisect_right(self.cumulative_sizes, token)
+        tokenizer = self.tokenizers[tokenizer_idx]
+        rel_token = token - self.cumulative_sizes[tokenizer_idx - 1]
+        word = tokenizer.itos(rel_token)
 
-    def stoi(self, string):
-        
-        start_token = 0
-
-        for tokenizer in self.tokenizers:
-            
-            token = tokenizer.stoi(string)
-            
-            if token is not None:
-                return start_token + token
-            else:
-                start_token += tokenizer.vocab_size
-
-        raise NotImplementedError("{} is not supported!".format(string))
-
-    def strings_to_tokens(self, strings):
-
-        tokens = []
-
-        for string in strings:
-            tokens.append(self.stoi(string))
-
-        return tokens
-
-    def tokens_to_strings(self, tokens):
-
-        strings = []
-
-        for token in tokens:
-            strings.append(self.itos(token))
-
-        return strings
-
-
-def test():
-
-    tokenizer = SpecialTokenizer()
-    tokenizer = Tokenizer(verbose=True)
-    from IPython import embed; embed(using=False); os._exit(0)
+        return word
 
 
 if __name__ == '__main__':
 
-    test()
+    tokenizer = ConcatTokenizer([
+        SpecialTokenizer(),
+        NameTokenizer(),
+        TimeTokenizer(),
+        PitchTokenizer(),
+        VelocityTokenizer()
+    ])
+
+    token = tokenizer.stoi("name=note_on")
+    word = tokenizer.itos(token)
+    print(token, word)
+
+    token = tokenizer.stoi("time=26.789")
+    word = tokenizer.itos(token)
+    print(token, word)
+
+    token = tokenizer.stoi("pitch=34")
+    word = tokenizer.itos(token)
+    print(token, word)
+
+    token = tokenizer.stoi("velocity=34")
+    word = tokenizer.itos(token)
+    print(token, word)
+
+    from IPython import embed; embed(using=False); os._exit(0)

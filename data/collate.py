@@ -1,25 +1,25 @@
-import numpy as np
-import torch
-import librosa
+from typing import Dict, List
+from torch.utils.data._utils.collate import default_collate_fn_map, collate
 
 
-def collate_fn(list_data_dict):
+def collate_list_fn(batch, *, collate_fn_map=None):
+    return batch
 
-    data_dict = {}
 
-    for key in list_data_dict[0].keys():
+class CollateToken:
+    r"""Collate music transcription tokens.
+    """
+    def __init__(self):
 
-        try:
-            if key in ["token", "question_token", "answer_token", "mask"]:
-                data_dict[key] = torch.LongTensor(np.stack([dd[key] for dd in list_data_dict], axis=0))
+        default_collate_fn_map.update({list: collate_list_fn})
 
-            elif key in ["audio", "frame_roll", "onset_roll", "offset_roll", "velocity_roll", "ped_frame_roll", "ped_onset_roll", "ped_offset_roll"]:
+    def __call__(self, batch: List) -> Dict:        
+        
+        batch = collate(batch=batch, collate_fn_map=default_collate_fn_map)
 
-                data_dict[key] = torch.Tensor(np.stack([dd[key] for dd in list_data_dict], axis=0))
+        # Shorten sequence length
+        max_tokens = batch["token"].max().item()
+        batch["token"] = batch["token"][:, 0 : max_tokens]
+        batch["mask"] = batch["mask"][:, 0 : max_tokens]
 
-            else:
-                data_dict[key] = [dd[key] for dd in list_data_dict]
-        except:
-            from IPython import embed; embed(using=False); os._exit(0)
-
-    return data_dict
+        return batch

@@ -1,2112 +1,229 @@
+from typing import Callable, Dict, Optional, Tuple, Union
+import re
+import os
+import time
 import torch
 from pathlib import Path
 import pandas as pd
 import random
-import time
 import librosa
 import torchaudio
-import pretty_midi
 import numpy as np
-import re
-import soundfile
+from torch.utils.data import Dataset
+from torch.utils.data._utils.collate import default_collate_fn_map
 
-from data.io import read_single_track_midi, notes_to_rolls_and_events, pedals_to_rolls_and_events, events_to_notes, notes_to_midi, fix_length, time_to_grid
-from data.tokenizers import Tokenizer
+from data.audio_io import load, random_start_time
+from data.midi_io import read_single_track_midi, notes_to_data
+from data.collate import collate_list_fn
+
+default_collate_fn_map.update({list: collate_list_fn})
 
 
-class Maestro:
+class MAESTRO(Dataset):
+    r"""MAESTRO [1] is a dataset containing 199 hours of 1,276 audio files and 
+    aligned MIDI files captured by Yamaha Disklaiver. Audios are sampled at 44,100 Hz. 
+    After decompression, the dataset is 131 GB.
+
+    [1] C. Hawthorne, et al., Enabling Factorized Piano Music Modeling and 
+    Generation with the MAESTRO Dataset, ICLR, 2019
+
+    The dataset looks like:
+
+        dataset_root (131 GB)
+        ├── 2004 (132 songs, wav + flac + midi + tsv)
+        ├── 2006 (115 songs, wav + flac + midi + tsv)
+        ├── 2008 (147 songs, wav + flac + midi + tsv)
+        ├── 2009 (125 songs, wav + flac + midi + tsv)
+        ├── 2011 (163 songs, wav + flac + midi + tsv)
+        ├── 2013 (127 songs, wav + flac + midi + tsv)
+        ├── 2014 (105 songs, wav + flac + midi + tsv)
+        ├── 2015 (129 songs, wav + flac + midi + tsv)
+        ├── 2017 (140 songs, wav + flac + midi + tsv)
+        ├── 2018 (93 songs, wav + flac + midi + tsv)
+        ├── LICENSE
+        ├── maestro-v3.0.0.csv
+        ├── maestro-v3.0.0.json
+        └── README
+    """
+
+    url = "https://magenta.tensorflow.org/datasets/maestro"
+
+    duration = 717232.49  # Dataset duration (s), 199 hours, including training, 
+    # validation, and testing.
+
+    pitches_num = 128
+
     def __init__(
         self, 
-        root: str = None, 
+        root: str, 
         split: str = "train",
-        segment_seconds: float = 10.,
-        tokenizer=None,
-        max_token_len=1024,
-    ):
-    
-        self.root = root
-        self.split = split
-        self.segment_seconds = segment_seconds
-        self.tokenizer = tokenizer
-        self.max_token_len = max_token_len
-
-        self.sample_rate = 16000
-        self.fps = 100
-        self.pitches_num = 128
-        self.segment_frames = int(self.segment_seconds * self.fps) + 1
-
-        # self.meta_csv = Path(self.root, "maestro-v2.0.0.csv")
-        self.meta_csv = Path(self.root, "maestro-v3.0.0.csv")
-
-        self.load_meta()
-                
-    def load_meta(self):
-
-        df = pd.read_csv(self.meta_csv, sep=',')
-
-        indexes = df["split"].values == self.split
-
-        self.midi_filenames = df["midi_filename"].values[indexes]
-        self.audio_filenames = df["audio_filename"].values[indexes]
-        self.durations = df["duration"].values[indexes]
-        self.audios_num = len(self.midi_filenames)
-
-    def __getitem__(self, index):
-        # t1 = time.time()
-        audio_path = Path(self.root, self.audio_filenames[index])
-        midi_path = Path(self.root, self.midi_filenames[index]) 
-        duration = self.durations[index]
-
-        segment_start_time = random.uniform(0, duration - self.segment_seconds)
-
-        if False:
-            index = 0
-            index = 27
-            audio_path = Path(self.root, self.audio_filenames[0])
-            midi_path = Path(self.root, self.midi_filenames[0]) 
-            segment_start_time = 12.780630179249533
-
-        # Load audio.
-        audio = self.load_audio(audio_path, segment_start_time)
-        # shape: (audio_samples)
-
-        # print("a1", time.time() - t1)
-        # t1 = time.time()
-
-        # Load tokens.
-        '''
-        string_processor = MaestroStringProcessor(
-            label=False,
-            onset=True,
-            offset=True,
-            sustain=False,
-            velocity=True,
-            pedal_onset=False,
-            pedal_offset=False,
-            pedal_sustain=False,
-        )
-        '''
-
-        string_processor = MaestroStringProcessor(
-            label=False,
-            onset=True,
-            offset=False,
-            sustain=False,
-            velocity=False,
-            pedal_onset=False,
-            pedal_offset=False,
-            pedal_sustain=False,
-        )
-
-        targets_dict = self.load_targets(
-            midi_path=midi_path, 
-            segment_start_time=segment_start_time, 
-            string_processor=string_processor
-        )
-        # shape: (tokens_num,)
-
-        data = {
-            "audio_path": audio_path,
-            "segment_start_time": segment_start_time,
-            "audio": audio,
-            "frame_roll": targets_dict["frame_roll"],
-            "onset_roll": targets_dict["onset_roll"],
-            "offset_roll": targets_dict["offset_roll"],
-            "velocity_roll": targets_dict["velocity_roll"],
-            "event": targets_dict["event"],
-            "string": targets_dict["string"],
-            "token": targets_dict["token"],
-            "tokens_num": targets_dict["tokens_num"],
-            "string_processor": targets_dict["string_processor"]
-        }
-
-        debug = False
-        if debug:
-            strings = self.tokenizer.tokens_to_strings(targets_dict["token"])
-            events = string_processor.strings_to_events(strings)
-            notes = events_to_notes(events)
-            notes_to_midi(notes, "_zz.mid")
-            soundfile.write(file="_zz.wav", data=audio, samplerate=self.sample_rate)
-            from IPython import embed; embed(using=False); os._exit(0)
-
-        # print("a2", time.time() - t1)
-        # t1 = time.time()
-
-        return data
-
-
-    def __len__(self):
-
-        return self.audios_num
-
-    def load_audio(self, audio_path, segment_start_time):
-
-        orig_sr = librosa.get_samplerate(audio_path)
-
-        segment_start_sample = int(segment_start_time * orig_sr)
-        segment_samples = int(self.segment_seconds * orig_sr)
-
-        audio, fs = torchaudio.load(
-            audio_path, 
-            frame_offset=segment_start_sample, 
-            num_frames=segment_samples
-        )
-        # (channels, audio_samples)
-
-        audio = torch.mean(audio, dim=0)
-        # shape: (audio_samples,)
-
-        audio = np.array(torchaudio.functional.resample(
-            waveform=audio, 
-            orig_freq=orig_sr, 
-            new_freq=self.sample_rate
-        ))
-        # shape: (audio_samples,)
-
-        return audio
-
-    def load_targets(self, midi_path, segment_start_time, string_processor):
-
-        # Read notes and extend notes by pedal information.
-        notes, pedals = read_single_track_midi(midi_path=midi_path, extend_pedal=True)
-
-        seg_start = segment_start_time
-        seg_end = seg_start + self.segment_seconds
-
-        label = "maestro-Piano"
-
-        note_data = notes_to_rolls_and_events(
-            notes=notes,
-            segment_frames=self.segment_frames, 
-            segment_start=seg_start,
-            segment_end=seg_end,
-            fps=self.fps,
-            label=label
-        )
-
-        pedal_data = pedals_to_rolls_and_events(
-            pedals=pedals,
-            segment_frames=self.segment_frames, 
-            segment_start=seg_start,
-            segment_end=seg_end,
-            fps=self.fps,
-            label=label,
-        )
-
-        events = note_data["events"] + pedal_data["events"]
-        events.sort(key=lambda event: (event["time"], event["name"]))
-
-        strings = string_processor.events_to_strings(events)
-
-        tokens = self.tokenizer.strings_to_tokens(strings)
-        tokens_num = len(tokens)
-
-        tokens = np.array(fix_length(
-            x=tokens, 
-            max_len=self.max_token_len, 
-            constant_value=self.tokenizer.stoi("<pad>")
-        ))
-
-        targets_dict = {
-            "frame_roll": note_data["frame_roll"],
-            "onset_roll": note_data["onset_roll"],
-            "offset_roll": note_data["offset_roll"],
-            "velocity_roll": note_data["velocity_roll"],
-            "ped_frame_roll": pedal_data["frame_roll"],
-            "ped_onset_roll": pedal_data["onset_roll"],
-            "ped_offset_roll": pedal_data["offset_roll"],
-            "event": events,
-            "string": strings,
-            "token": tokens,
-            "tokens_num": tokens_num,
-            "string_processor": string_processor
-        }
-
-        return targets_dict
-
-
-class MaestroMultiTask:
-    def __init__(
-        self, 
-        root: str = None, 
-        split: str = "train",
-        segment_seconds: float = 10.,
-        tokenizer=None,
-        max_token_len=1024,
-        task=None,
-    ):
-    
-        self.root = root
-        self.split = split
-        self.segment_seconds = segment_seconds
-        self.tokenizer = tokenizer
-        self.max_token_len = max_token_len
-        self.task = task
-
-        self.sample_rate = 16000
-        self.fps = 100
-        self.pitches_num = 128
-        self.segment_frames = int(self.segment_seconds * self.fps) + 1
-
-        # self.meta_csv = Path(self.root, "maestro-v2.0.0.csv")
-        self.meta_csv = Path(self.root, "maestro-v3.0.0.csv")
-
-        self.load_meta()
-                
-    def load_meta(self):
-
-        df = pd.read_csv(self.meta_csv, sep=',')
-
-        indexes = df["split"].values == self.split
-
-        self.midi_filenames = df["midi_filename"].values[indexes]
-        self.audio_filenames = df["audio_filename"].values[indexes]
-        self.durations = df["duration"].values[indexes]
-        self.audios_num = len(self.midi_filenames)
-
-    def __getitem__(self, index):
-        # t1 = time.time()
-        audio_path = Path(self.root, self.audio_filenames[index])
-        midi_path = Path(self.root, self.midi_filenames[index]) 
-        duration = self.durations[index]
-
-        segment_start_time = random.uniform(0, duration - self.segment_seconds)
-
-        if False:
-            index = 0
-            index = 27
-            audio_path = Path(self.root, self.audio_filenames[0])
-            midi_path = Path(self.root, self.midi_filenames[0]) 
-            segment_start_time = 12.780630179249533
-
-        # Load audio.
-        audio = self.load_audio(audio_path, segment_start_time)
-        # shape: (audio_samples)
-
-        targets_dict = self.load_targets(
-            midi_path=midi_path, 
-            segment_start_time=segment_start_time, 
-        )
-        # shape: (tokens_num,)
-
-        data = {
-            "audio_path": audio_path,
-            "segment_start_time": segment_start_time,
-            "audio": audio,
-            "frame_roll": targets_dict["frame_roll"],
-            "onset_roll": targets_dict["onset_roll"],
-            "offset_roll": targets_dict["offset_roll"],
-            "velocity_roll": targets_dict["velocity_roll"],
-            "question_string": targets_dict["question_string"],
-            "question_token": targets_dict["question_token"],
-            "question_tokens_num": targets_dict["question_tokens_num"],
-            "answer_string": targets_dict["answer_string"],
-            "answer_token": targets_dict["answer_token"],
-            "answer_tokens_num": targets_dict["answer_tokens_num"], 
-        }
-
-        debug = False
-        if debug:
-            strings = self.tokenizer.tokens_to_strings(targets_dict["token"])
-            events = string_processor.strings_to_events(strings)
-            notes = events_to_notes(events)
-            notes_to_midi(notes, "_zz.mid")
-            soundfile.write(file="_zz.wav", data=audio, samplerate=self.sample_rate)
-            from IPython import embed; embed(using=False); os._exit(0)
-
-        # print("a2", time.time() - t1)
-        # t1 = time.time()
-
-        return data
-
-
-    def __len__(self):
-
-        return self.audios_num
-
-    def load_audio(self, audio_path, segment_start_time):
-
-        orig_sr = librosa.get_samplerate(audio_path)
-
-        segment_start_sample = int(segment_start_time * orig_sr)
-        segment_samples = int(self.segment_seconds * orig_sr)
-
-        audio, fs = torchaudio.load(
-            audio_path, 
-            frame_offset=segment_start_sample, 
-            num_frames=segment_samples
-        )
-        # (channels, audio_samples)
-
-        audio = torch.mean(audio, dim=0)
-        # shape: (audio_samples,)
-
-        audio = np.array(torchaudio.functional.resample(
-            waveform=audio, 
-            orig_freq=orig_sr, 
-            new_freq=self.sample_rate
-        ))
-        # shape: (audio_samples,)
-
-        return audio
-
-    def load_targets(self, midi_path, segment_start_time):
-
-        # Read notes and extend notes by pedal information.
-        notes, pedals = read_single_track_midi(midi_path=midi_path, extend_pedal=True)
-
-        seg_start = segment_start_time
-        seg_end = seg_start + self.segment_seconds
-
-        label = "maestro-Piano"
-
-        note_data = notes_to_rolls_and_events(
-            notes=notes,
-            segment_frames=self.segment_frames, 
-            segment_start=seg_start,
-            segment_end=seg_end,
-            fps=self.fps,
-            label=label
-        )
-
-        pedal_data = pedals_to_rolls_and_events(
-            pedals=pedals,
-            segment_frames=self.segment_frames, 
-            segment_start=seg_start,
-            segment_end=seg_end,
-            fps=self.fps,
-            label=label,
-        )
-
-        events = note_data["events"] + pedal_data["events"]
-        events.sort(key=lambda event: (event["time"], event["name"]))
-        
-
-        if self.task == "velocity":
-            
-            active_notes = []
-            for note in note_data["notes"]:
-                if note.start >= 0:
-                    active_notes.append(note)
-
-            if len(active_notes) == 0:
-                question_strings = [
-                    "<sos>",
-                    "<eos>",
-                ]
-
-                answer_strings = [
-                    "<sos>",
-                    "<eos>"
-                ]
-            else:
-                note = random.choice(active_notes)
-
-                onset_time = time_to_grid(note.start, self.fps)
-                pitch = note.pitch
-                velocity = note.velocity
-
-                question_strings = [
-                    "<sos>",
-                    "task=velocity",
-                    "name=note_on",
-                    "time={}".format(onset_time),
-                    "pitch={}".format(pitch),
-                    "<eos>",
-                ]
-
-                answer_strings = [
-                    "<sos>",
-                    "name=note_on",
-                    "time={}".format(onset_time),
-                    "pitch={}".format(pitch),
-                    "velocity={}".format(velocity),
-                    "<eos>"
-                ]
-
-        elif self.task == "offset":
-
-            active_notes = note_data["notes"]
-
-            if len(active_notes) == 0:
-                question_strings = [
-                    "<sos>",
-                    "<eos>",
-                ]
-
-                answer_strings = [
-                    "<sos>",
-                    "<eos>"
-                ]
-            else:
-                note = random.choice(active_notes)
-                # note = active_notes[-1]
-
-                onset_time = time_to_grid(note.start, self.fps)
-                offset_time = time_to_grid(note.end, self.fps)
-                pitch = note.pitch
-                velocity = note.velocity
-
-                if onset_time < 0 and 0 <= offset_time <= self.segment_seconds:
-                    question_strings = [
-                        "<sos>",
-                        "task=offset",
-                        "name=note_sustain",
-                        "time={}".format(0.),
-                        "pitch={}".format(pitch),
-                        "<eos>",
-                    ]
-
-                    answer_strings = [
-                        "<sos>",
-                        "name=note_off"
-                        "time={}".format(offset_time),
-                        "pitch={}".format(pitch),
-                        "<eos>"
-                    ]
-
-                if 0 <= onset_time <= offset_time <= self.segment_seconds:
-                    question_strings = [
-                        "<sos>",
-                        "task=offset",
-                        "name=note_on",
-                        "time={}".format(onset_time),
-                        "pitch={}".format(pitch),
-                        "<eos>",
-                    ]
-
-                    answer_strings = [
-                        "<sos>",
-                        "name=note_off",
-                        "time={}".format(offset_time),
-                        "pitch={}".format(pitch),
-                        "<eos>"
-                    ]
-
-                elif 0 <= onset_time <= self.segment_seconds and self.segment_seconds < offset_time:
-
-                    question_strings = [
-                        "<sos>",
-                        "task=offset",
-                        "name=note_on",
-                        "time={}".format(onset_time),
-                        "pitch={}".format(pitch),
-                        "<eos>",
-                    ]
-
-                    answer_strings = [
-                        "<sos>",
-                        "name=note_sustain",
-                        "time={}".format(self.segment_seconds),
-                        "pitch={}".format(pitch),
-                        "<eos>"
-                    ]
-
-                elif onset_time < 0 and self.segment_seconds < offset_time:
-
-                    question_strings = [
-                        "<sos>",
-                        "task=offset",
-                        "name=note_sustain",
-                        "time={}".format(0.),
-                        "pitch={}".format(pitch),
-                        "<eos>",
-                    ]
-
-                    answer_strings = [
-                        "<sos>",
-                        "name=note_sustain",
-                        "time={}".format(self.segment_seconds),
-                        "pitch={}".format(pitch),
-                        "<eos>"
-                    ]
-
-            # from IPython import embed; embed(using=False); os._exit(0)
-
-        else:
-            raise NotImplementedError
-
-        #
-        question_tokens = self.tokenizer.strings_to_tokens(question_strings)
-        question_tokens_num = len(question_tokens)
-
-        question_tokens = np.array(fix_length(
-            x=question_tokens, 
-            max_len=self.max_token_len, 
-            constant_value=self.tokenizer.stoi("<pad>")
-        ))
-
-        #
-        answer_tokens = self.tokenizer.strings_to_tokens(answer_strings)
-        answer_tokens_num = len(answer_tokens)
-
-        answer_tokens = np.array(fix_length(
-            x=answer_tokens, 
-            max_len=self.max_token_len, 
-            constant_value=self.tokenizer.stoi("<pad>")
-        ))
-
-        targets_dict = {
-            "frame_roll": note_data["frame_roll"],
-            "onset_roll": note_data["onset_roll"],
-            "offset_roll": note_data["offset_roll"],
-            "velocity_roll": note_data["velocity_roll"],
-            "ped_frame_roll": pedal_data["frame_roll"],
-            "ped_onset_roll": pedal_data["onset_roll"],
-            "ped_offset_roll": pedal_data["offset_roll"],
-            "question_string": question_strings,
-            "question_token": question_tokens,
-            "question_tokens_num": question_tokens_num,
-            "answer_string": answer_strings,
-            "answer_token": answer_tokens,
-            "answer_tokens_num": answer_tokens_num,
-        }
-
-        return targets_dict
-
-
-class MaestroMultiTask2:
-    def __init__(
-        self, 
-        root: str = None, 
-        split: str = "train",
-        segment_seconds: float = 10.,
-        tokenizer=None,
-        question_token_len=None,
-        answer_token_len=None,
-        task=None,
-        extend_pedal=True,
+        sr: float = 16000,
+        mono: bool = True,
+        clip_duration: float = 10.,
+        fps: int = 100,
+        extend_pedal: bool = True,
+        transform: Optional[Callable] = None,
+        target_transform: Optional[Callable] = None
     ):
 
         self.root = root
         self.split = split
-        self.segment_seconds = segment_seconds
-        self.tokenizer = tokenizer
-        # self.max_token_len = max_token_len
-        self.question_token_len = question_token_len
-        self.answer_token_len = answer_token_len
-        self.task = task
-
-        self.sample_rate = 16000
-        self.fps = 100
-        self.pitches_num = 128
-        self.segment_frames = int(self.segment_seconds * self.fps) + 1
-
+        self.sr = sr
+        self.mono = mono
+        self.clip_duration = clip_duration
+        self.fps = fps
         self.extend_pedal = extend_pedal
+        self.transform = transform
+        self.target_transform = target_transform
 
-        # self.meta_csv = Path(self.root, "maestro-v2.0.0.csv")
-        self.meta_csv = Path(self.root, "maestro-v3.0.0.csv")
+        self.clip_frames = round(self.clip_duration * self.fps) + 1
+        self.clip_samples = round(self.clip_duration * self.sr)
 
-        self.load_meta()
-                
-    def load_meta(self):
+        meta_csv = Path(self.root, "maestro-v3.0.0.csv")
 
-        df = pd.read_csv(self.meta_csv, sep=',')
-
-        indexes = df["split"].values == self.split
-
-        self.midi_filenames = df["midi_filename"].values[indexes]
-        self.audio_filenames = df["audio_filename"].values[indexes]
-        self.durations = df["duration"].values[indexes]
-        self.audios_num = len(self.midi_filenames)
-
-    def __getitem__(self, index):
-        # t1 = time.time()
-        audio_path = Path(self.root, self.audio_filenames[index])
-        midi_path = Path(self.root, self.midi_filenames[index]) 
-        duration = self.durations[index]
-
-        segment_start_time = random.uniform(0, duration - self.segment_seconds)
-
-        if False:
-            index = 0
-            index = 27
-            audio_path = Path(self.root, self.audio_filenames[0])
-            midi_path = Path(self.root, self.midi_filenames[0]) 
-            segment_start_time = 12.780630179249533
-
-        # Load audio.
-        audio = self.load_audio(audio_path, segment_start_time)
-        # shape: (audio_samples)
-
-        string_processor = MaestroStringProcessor(
-            label=False,
-            onset=True,
-            offset=False,
-            sustain=False,
-            velocity=False,
-            pedal_onset=False,
-            pedal_offset=False,
-            pedal_sustain=False,
-        )
-
-        targets_dict = self.load_targets(
-            midi_path=midi_path, 
-            segment_start_time=segment_start_time, 
-            string_processor=string_processor,
-        )
-        # shape: (tokens_num,)
-
-        data = {
-            "audio_path": audio_path,
-            "segment_start_time": segment_start_time,
-            "audio": audio,
-            "frame_roll": targets_dict["frame_roll"],
-            "onset_roll": targets_dict["onset_roll"],
-            "offset_roll": targets_dict["offset_roll"],
-            "velocity_roll": targets_dict["velocity_roll"],
-            "question_string": targets_dict["question_string"],
-            "question_token": targets_dict["question_token"],
-            "question_tokens_num": targets_dict["question_tokens_num"],
-            "answer_string": targets_dict["answer_string"],
-            "answer_token": targets_dict["answer_token"],
-            "answer_tokens_num": targets_dict["answer_tokens_num"], 
-        }
-
-        debug = False
-        if debug:
-            strings = self.tokenizer.tokens_to_strings(targets_dict["token"])
-            events = string_processor.strings_to_events(strings)
-            notes = events_to_notes(events)
-            notes_to_midi(notes, "_zz.mid")
-            soundfile.write(file="_zz.wav", data=audio, samplerate=self.sample_rate)
-            from IPython import embed; embed(using=False); os._exit(0)
-
-        # print("a2", time.time() - t1)
-        # t1 = time.time()
-
-        return data
-
-
-    def __len__(self):
-
-        return self.audios_num
-
-    def load_audio(self, audio_path, segment_start_time):
-
-        orig_sr = librosa.get_samplerate(audio_path)
-
-        segment_start_sample = int(segment_start_time * orig_sr)
-        segment_samples = int(self.segment_seconds * orig_sr)
-
-        audio, fs = torchaudio.load(
-            audio_path, 
-            frame_offset=segment_start_sample, 
-            num_frames=segment_samples
-        )
-        # (channels, audio_samples)
-
-        audio = torch.mean(audio, dim=0)
-        # shape: (audio_samples,)
-
-        audio = np.array(torchaudio.functional.resample(
-            waveform=audio, 
-            orig_freq=orig_sr, 
-            new_freq=self.sample_rate
-        ))
-        # shape: (audio_samples,)
-
-        return audio
-
-    def load_targets(self, midi_path, segment_start_time, string_processor):
-
-        # Read notes and extend notes by pedal information.
-        # midi_path = "/datasets/maestro-v3.0.0/maestro-v3.0.0/2009/MIDI-Unprocessed_11_R1_2009_06-09_ORIG_MID--AUDIO_11_R1_2009_11_R1_2009_07_WAV.midi"
-        notes, pedals = read_single_track_midi(midi_path=midi_path, extend_pedal=self.extend_pedal)
-
-        seg_start = segment_start_time
-        seg_end = seg_start + self.segment_seconds
-
-        label = "maestro-Piano"
-
-        note_data = notes_to_rolls_and_events(
-            notes=notes,
-            segment_frames=self.segment_frames, 
-            segment_start=seg_start,
-            segment_end=seg_end,
-            fps=self.fps,
-            label=label
-        )
-
-        pedal_data = pedals_to_rolls_and_events(
-            pedals=pedals,
-            segment_frames=self.segment_frames, 
-            segment_start=seg_start,
-            segment_end=seg_end,
-            fps=self.fps,
-            label=label,
-        )
-
-        events = note_data["events"] + pedal_data["events"]
-        events.sort(key=lambda event: (event["time"], event["name"]))
+        self.meta_dict = self.load_meta(meta_csv)
         
-        if self.task == "onset":
-
-            question_strings = [
-                "<sos>",
-                "task=onset",
-                "<eos>",
-            ]
-
-            events = note_data["events"] + pedal_data["events"]
-            events.sort(key=lambda event: (event["time"], event["name"]))
-
-            answer_strings = string_processor.events_to_strings(events)
-
-        elif self.task == "velocity":
-            
-            active_notes = []
-            for note in note_data["notes"]:
-                if note.start >= 0:
-                    active_notes.append(note)
-
-            if len(active_notes) == 0:
-                question_strings = [
-                    "<sos>",
-                    "<eos>",
-                ]
-
-                answer_strings = [
-                    "<sos>",
-                    "<eos>"
-                ]
-            else:
-                note = random.choice(active_notes)
-
-                onset_time = time_to_grid(note.start, self.fps)
-                pitch = note.pitch
-                velocity = note.velocity
-
-                question_strings = [
-                    "<sos>",
-                    "task=velocity",
-                    "name=note_on",
-                    "time={}".format(onset_time),
-                    "pitch={}".format(pitch),
-                    "<eos>",
-                ]
-
-                answer_strings = [
-                    "<sos>",
-                    "name=note_on",
-                    "time={}".format(onset_time),
-                    "pitch={}".format(pitch),
-                    "velocity={}".format(velocity),
-                    "<eos>"
-                ]
-
-        elif self.task == "offset":
-
-            active_notes = note_data["notes"]
-
-            if len(active_notes) == 0:
-                question_strings = [
-                    "<sos>",
-                    "<eos>",
-                ]
-
-                answer_strings = [
-                    "<sos>",
-                    "<eos>"
-                ]
-            else:
-                note = random.choice(active_notes)
-                # note = active_notes[-1]
-
-                onset_time = time_to_grid(note.start, self.fps)
-                offset_time = time_to_grid(note.end, self.fps)
-                pitch = note.pitch
-                velocity = note.velocity
-
-                if onset_time < 0 and 0 <= offset_time <= self.segment_seconds:
-                    question_strings = [
-                        "<sos>",
-                        "task=offset",
-                        "name=note_sustain",
-                        "time={}".format(0.),
-                        "pitch={}".format(pitch),
-                        "<eos>",
-                    ]
-
-                    answer_strings = [
-                        "<sos>",
-                        "name=note_off",
-                        "time={}".format(offset_time),
-                        "pitch={}".format(pitch),
-                        "<eos>"
-                    ]
-
-                elif 0 <= onset_time <= offset_time <= self.segment_seconds:
-                    question_strings = [
-                        "<sos>",
-                        "task=offset",
-                        "name=note_on",
-                        "time={}".format(onset_time),
-                        "pitch={}".format(pitch),
-                        "<eos>",
-                    ]
-
-                    answer_strings = [
-                        "<sos>",
-                        "name=note_off",
-                        "time={}".format(offset_time),
-                        "pitch={}".format(pitch),
-                        "<eos>"
-                    ]
-
-                elif 0 <= onset_time <= self.segment_seconds and self.segment_seconds < offset_time:
-
-                    question_strings = [
-                        "<sos>",
-                        "task=offset",
-                        "name=note_on",
-                        "time={}".format(onset_time),
-                        "pitch={}".format(pitch),
-                        "<eos>",
-                    ]
-
-                    answer_strings = [
-                        "<sos>",
-                        "name=note_sustain",
-                        "time={}".format(self.segment_seconds),
-                        "pitch={}".format(pitch),
-                        "<eos>"
-                    ]
-
-                elif onset_time < 0 and self.segment_seconds < offset_time:
-
-                    question_strings = [
-                        "<sos>",
-                        "task=offset",
-                        "name=note_sustain",
-                        "time={}".format(0.),
-                        "pitch={}".format(pitch),
-                        "<eos>",
-                    ]
-
-                    answer_strings = [
-                        "<sos>",
-                        "name=note_sustain",
-                        "time={}".format(self.segment_seconds),
-                        "pitch={}".format(pitch),
-                        "<eos>"
-                    ]
-
-            # from IPython import embed; embed(using=False); os._exit(0)
-
-        else:
-            raise NotImplementedError
-
-        #
-        question_tokens = self.tokenizer.strings_to_tokens(question_strings)
-        question_tokens_num = len(question_tokens)
-
-        question_tokens = np.array(fix_length(
-            x=question_tokens, 
-            max_len=self.question_token_len, 
-            constant_value=self.tokenizer.stoi("<pad>")
-        ))
-
-        #
-        answer_tokens = self.tokenizer.strings_to_tokens(answer_strings)
-        answer_tokens_num = len(answer_tokens)
-
-        answer_tokens = np.array(fix_length(
-            x=answer_tokens, 
-            max_len=self.answer_token_len, 
-            constant_value=self.tokenizer.stoi("<pad>")
-        ))
-
-        targets_dict = {
-            "frame_roll": note_data["frame_roll"],
-            "onset_roll": note_data["onset_roll"],
-            "offset_roll": note_data["offset_roll"],
-            "velocity_roll": note_data["velocity_roll"],
-            "ped_frame_roll": pedal_data["frame_roll"],
-            "ped_onset_roll": pedal_data["onset_roll"],
-            "ped_offset_roll": pedal_data["offset_roll"],
-            "question_string": question_strings,
-            "question_token": question_tokens,
-            "question_tokens_num": question_tokens_num,
-            "answer_string": answer_strings,
-            "answer_token": answer_tokens,
-            "answer_tokens_num": answer_tokens_num,
-        }
-
-        return targets_dict
-
-
-class MaestroMultiTask3:
-    def __init__(
-        self, 
-        root: str = None, 
-        split: str = "train",
-        segment_seconds: float = 10.,
-        tokenizer=None,
-        question_token_len=None,
-        answer_token_len=None,
-        task=None,
-        extend_pedal=True,
-    ):
-
-        self.root = root
-        self.split = split
-        self.segment_seconds = segment_seconds
-        self.tokenizer = tokenizer
-        # self.max_token_len = max_token_len
-        self.question_token_len = question_token_len
-        self.answer_token_len = answer_token_len
-        self.task = task
-
-        self.sample_rate = 16000
-        self.fps = 100
-        self.pitches_num = 128
-        self.segment_frames = int(self.segment_seconds * self.fps) + 1
-
-        self.extend_pedal = extend_pedal
-
-        # self.meta_csv = Path(self.root, "maestro-v2.0.0.csv")
-        self.meta_csv = Path(self.root, "maestro-v3.0.0.csv")
-
-        self.load_meta()
-                
-    def load_meta(self):
-
-        df = pd.read_csv(self.meta_csv, sep=',')
-
-        indexes = df["split"].values == self.split
-
-        self.midi_filenames = df["midi_filename"].values[indexes]
-        self.audio_filenames = df["audio_filename"].values[indexes]
-        self.durations = df["duration"].values[indexes]
-        self.audios_num = len(self.midi_filenames)
-
     def __getitem__(self, index):
-        # t1 = time.time()
-        audio_path = Path(self.root, self.audio_filenames[index])
-        midi_path = Path(self.root, self.midi_filenames[index]) 
-        duration = self.durations[index]
 
-        segment_start_time = random.uniform(0, duration - self.segment_seconds)
+        audio_path = Path(self.root, self.meta_dict["audio_name"][index])
+        midi_path = Path(self.root, self.meta_dict["midi_name"][index]) 
+        duration = self.meta_dict["duration"][index]
 
-        if False:
-            index = 0
-            index = 27
-            audio_path = Path(self.root, self.audio_filenames[0])
-            midi_path = Path(self.root, self.midi_filenames[0]) 
-            segment_start_time = 12.780630179249533
+        clip_start_time = random_start_time(audio_path)
 
-        # Load audio.
-        audio = self.load_audio(audio_path, segment_start_time)
-        # shape: (audio_samples)
-
-        string_processor = MaestroStringProcessor(
-            label=False,
-            onset=True,
-            offset=False,
-            sustain=False,
-            velocity=False,
-            pedal_onset=False,
-            pedal_offset=False,
-            pedal_sustain=False,
-        )
-
-        targets_dict = self.load_targets(
-            midi_path=midi_path, 
-            segment_start_time=segment_start_time, 
-            string_processor=string_processor,
-        )
-        # shape: (tokens_num,)
-
-        data = {
-            "audio_path": audio_path,
-            "segment_start_time": segment_start_time,
-            "audio": audio,
-            "frame_roll": targets_dict["frame_roll"],
-            "onset_roll": targets_dict["onset_roll"],
-            "offset_roll": targets_dict["offset_roll"],
-            "velocity_roll": targets_dict["velocity_roll"],
-            "question_string": targets_dict["question_string"],
-            "question_token": targets_dict["question_token"],
-            "question_tokens_num": targets_dict["question_tokens_num"],
-            "answer_string": targets_dict["answer_string"],
-            "answer_token": targets_dict["answer_token"],
-            "answer_tokens_num": targets_dict["answer_tokens_num"], 
-        }
-
-        debug = False
-        if debug:
-            strings = self.tokenizer.tokens_to_strings(targets_dict["token"])
-            events = string_processor.strings_to_events(strings)
-            notes = events_to_notes(events)
-            notes_to_midi(notes, "_zz.mid")
-            soundfile.write(file="_zz.wav", data=audio, samplerate=self.sample_rate)
-            from IPython import embed; embed(using=False); os._exit(0)
-
-        # print("a2", time.time() - t1)
-        # t1 = time.time()
-
-        return data
-
-
-    def __len__(self):
-
-        return self.audios_num
-
-    def load_audio(self, audio_path, segment_start_time):
-
-        orig_sr = librosa.get_samplerate(audio_path)
-
-        segment_start_sample = int(segment_start_time * orig_sr)
-        segment_samples = int(self.segment_seconds * orig_sr)
-
-        audio, fs = torchaudio.load(
-            audio_path, 
-            frame_offset=segment_start_sample, 
-            num_frames=segment_samples
-        )
-        # (channels, audio_samples)
-
-        audio = torch.mean(audio, dim=0)
-        # shape: (audio_samples,)
-
-        audio = np.array(torchaudio.functional.resample(
-            waveform=audio, 
-            orig_freq=orig_sr, 
-            new_freq=self.sample_rate
-        ))
-        # shape: (audio_samples,)
-
-        return audio
-
-    def load_targets(self, midi_path, segment_start_time, string_processor):
-
-        # Read notes and extend notes by pedal information.
-        # midi_path = "/datasets/maestro-v3.0.0/maestro-v3.0.0/2009/MIDI-Unprocessed_11_R1_2009_06-09_ORIG_MID--AUDIO_11_R1_2009_11_R1_2009_07_WAV.midi"
-        notes, pedals = read_single_track_midi(midi_path=midi_path, extend_pedal=self.extend_pedal)
-
-        seg_start = segment_start_time
-        seg_end = seg_start + self.segment_seconds
-
-        label = "maestro-Piano"
-
-        note_data = notes_to_rolls_and_events(
-            notes=notes,
-            segment_frames=self.segment_frames, 
-            segment_start=seg_start,
-            segment_end=seg_end,
-            fps=self.fps,
-            label=label
-        )
-
-        pedal_data = pedals_to_rolls_and_events(
-            pedals=pedals,
-            segment_frames=self.segment_frames, 
-            segment_start=seg_start,
-            segment_end=seg_end,
-            fps=self.fps,
-            label=label,
-        )
-
-        events = note_data["events"] + pedal_data["events"]
-        events.sort(key=lambda event: (event["time"], event["name"]))
+        # Load audio
+        audio = self.load_audio(path=audio_path, offset=clip_start_time)
+        # shape: (channels, audio_samples)
         
-        if self.task == "onset":
+        # Load target
+        target_data = self.load_target(midi_path=midi_path, clip_start_time=clip_start_time)
+        # shape: (classes_num,)
 
-            question_strings = [
-                "<sos>",
-                "task=onset",
-                "<eos>",
-            ]
-
-            events = note_data["events"] + pedal_data["events"]
-            events.sort(key=lambda event: (event["time"], event["name"]))
-
-            answer_strings = string_processor.events_to_strings(events)
-
-        elif self.task == "velocity":
-            
-            active_notes = []
-            for note in note_data["notes"]:
-                if note.start >= 0:
-                    active_notes.append(note)
-
-            if len(active_notes) == 0:
-                question_strings = [
-                    "<sos>",
-                    "<eos>",
-                ]
-
-                answer_strings = [
-                    "<sos>",
-                    "<eos>"
-                ]
-            else:
-                note = random.choice(active_notes)
-
-                onset_time = time_to_grid(note.start, self.fps)
-                pitch = note.pitch
-                velocity = note.velocity
-
-                question_strings = [
-                    "<sos>",
-                    "task=velocity",
-                    "name=note_on",
-                    "time={}".format(onset_time),
-                    "pitch={}".format(pitch),
-                    "<eos>",
-                ]
-
-                answer_strings = [
-                    "<sos>",
-                    "name=note_on",
-                    "time={}".format(onset_time),
-                    "pitch={}".format(pitch),
-                    "velocity={}".format(velocity),
-                    "<eos>"
-                ]
-
-        elif self.task == "offset":
-
-            active_notes = note_data["notes"]
-
-            question_strings = ["<sos>", "task=offset"]
-            answer_strings = ["<sos>"]
-
-            for note in active_notes:
-
-                onset_time = time_to_grid(note.start, self.fps)
-                offset_time = time_to_grid(note.end, self.fps)
-                pitch = note.pitch
-                velocity = note.velocity
-
-                if onset_time < 0 and 0 <= offset_time <= self.segment_seconds:
-
-                    question_strings.extend([
-                        "name=note_sustain",
-                        "pitch={}".format(pitch),
-                        ])
-
-                    answer_strings.extend([
-                        "time={}".format(offset_time),
-                    ])
-
-                elif 0 <= onset_time <= offset_time <= self.segment_seconds:
-                    question_strings.extend([
-                        "time={}".format(onset_time),
-                        "pitch={}".format(pitch),
-                        ])
-
-                    answer_strings.extend([
-                        "time={}".format(offset_time),
-                    ])
-
-                elif 0 <= onset_time <= self.segment_seconds and self.segment_seconds < offset_time:
-                    question_strings.extend([
-                        "time={}".format(onset_time),
-                        "pitch={}".format(pitch),
-                        ])
-
-                    answer_strings.extend([
-                        "name=note_sustain",
-                    ])
-
-                elif onset_time < 0 and self.segment_seconds < offset_time:
-
-                    question_strings.extend([
-                        "name=note_sustain",
-                        "pitch={}".format(pitch),
-                        ])
-
-                    answer_strings.extend([
-                        "name=note_sustain",
-                    ])
-
-            question_strings.extend(["<eos>"])
-            answer_strings.extend(["<eos>"])
-
-            # from IPython import embed; embed(using=False); os._exit(0)
-
-        else:
-            raise NotImplementedError
-
-        #
-        question_tokens = self.tokenizer.strings_to_tokens(question_strings)
-        question_tokens_num = len(question_tokens)
-
-        question_tokens = np.array(fix_length(
-            x=question_tokens, 
-            max_len=self.question_token_len, 
-            constant_value=self.tokenizer.stoi("<pad>")
-        ))
-
-        #
-        answer_tokens = self.tokenizer.strings_to_tokens(answer_strings)
-        answer_tokens_num = len(answer_tokens)
-
-        answer_tokens = np.array(fix_length(
-            x=answer_tokens, 
-            max_len=self.answer_token_len, 
-            constant_value=self.tokenizer.stoi("<pad>")
-        ))
-
-        targets_dict = {
-            "frame_roll": note_data["frame_roll"],
-            "onset_roll": note_data["onset_roll"],
-            "offset_roll": note_data["offset_roll"],
-            "velocity_roll": note_data["velocity_roll"],
-            "ped_frame_roll": pedal_data["frame_roll"],
-            "ped_onset_roll": pedal_data["onset_roll"],
-            "ped_offset_roll": pedal_data["offset_roll"],
-            "question_string": question_strings,
-            "question_token": question_tokens,
-            "question_tokens_num": question_tokens_num,
-            "answer_string": answer_strings,
-            "answer_token": answer_tokens,
-            "answer_tokens_num": answer_tokens_num,
-        }
-
-        return targets_dict
-
-
-class MaestroMultiTask4:
-    def __init__(
-        self, 
-        root: str = None, 
-        split: str = "train",
-        segment_seconds: float = 10.,
-        tokenizer=None,
-        question_token_len=None,
-        answer_token_len=None,
-        task=None,
-        extend_pedal=True,
-    ):
-
-        self.root = root
-        self.split = split
-        self.segment_seconds = segment_seconds
-        self.tokenizer = tokenizer
-        self.question_token_len = question_token_len
-        self.answer_token_len = answer_token_len
-        self.task = task
-
-        self.sample_rate = 16000
-        self.fps = 100
-        self.pitches_num = 128
-        self.segment_frames = int(self.segment_seconds * self.fps) + 1
-        self.segment_samples = int(self.segment_seconds * self.sample_rate)
-
-        self.extend_pedal = extend_pedal
-
-        self.meta_csv = Path(self.root, "maestro-v3.0.0.csv")
-
-        self.load_meta()
-                
-    def load_meta(self):
-
-        df = pd.read_csv(self.meta_csv, sep=',')
-
-        indexes = df["split"].values == self.split
-
-        self.midi_filenames = df["midi_filename"].values[indexes]
-        self.audio_filenames = df["audio_filename"].values[indexes]
-        self.durations = df["duration"].values[indexes]
-        self.audios_num = len(self.midi_filenames)
-
-    def __getitem__(self, index):
-        # t1 = time.time()
-        audio_path = Path(self.root, self.audio_filenames[index])
-        midi_path = Path(self.root, self.midi_filenames[index]) 
-        duration = self.durations[index]
-
-        # segment_start_time = random.uniform(0, duration - self.segment_seconds)
-        segment_start_time = random.uniform(0, duration)
-
-        if False:
-            index = 0
-            index = 27
-            audio_path = Path(self.root, self.audio_filenames[0])
-            midi_path = Path(self.root, self.midi_filenames[0]) 
-            segment_start_time = 12.780630179249533
-
-        # Load audio.
-        audio = self.load_audio(audio_path, segment_start_time)
-        # shape: (audio_samples)
-
-        string_processor = MaestroStringProcessor(
-            label=False,
-            onset=True,
-            offset=False,
-            sustain=False,
-            velocity=False,
-            pedal_onset=False,
-            pedal_offset=False,
-            pedal_sustain=False,
-        )
-
-        targets_dict = self.load_targets(
-            midi_path=midi_path, 
-            segment_start_time=segment_start_time, 
-            string_processor=string_processor,
-        )
-        # shape: (tokens_num,)
-
-        data = {
-            "audio_path": audio_path,
-            "segment_start_time": segment_start_time,
+        full_data = {
+            "audio_path": str(audio_path),
+            "clip_start_time": clip_start_time,
             "audio": audio,
-            "frame_roll": targets_dict["frame_roll"],
-            "onset_roll": targets_dict["onset_roll"],
-            "offset_roll": targets_dict["offset_roll"],
-            "velocity_roll": targets_dict["velocity_roll"],
-            "question_string": targets_dict["question_string"],
-            "question_token": targets_dict["question_token"],
-            "question_tokens_num": targets_dict["question_tokens_num"],
-            "answer_string": targets_dict["answer_string"],
-            "answer_token": targets_dict["answer_token"],
-            "answer_tokens_num": targets_dict["answer_tokens_num"], 
         }
 
-        debug = False
-        if debug:
-            strings = self.tokenizer.tokens_to_strings(targets_dict["token"])
-            events = string_processor.strings_to_events(strings)
-            notes = events_to_notes(events)
-            notes_to_midi(notes, "_zz.mid")
-            soundfile.write(file="_zz.wav", data=audio, samplerate=self.sample_rate)
-            from IPython import embed; embed(using=False); os._exit(0)
+        # Merge dict
+        full_data.update(target_data)
 
-        # print("a2", time.time() - t1)
-        # t1 = time.time()
-
-        return data
-
+        return full_data
 
     def __len__(self):
 
-        return self.audios_num
+        audios_num = len(self.meta_dict["audio_name"])
 
-    def load_audio(self, audio_path, segment_start_time):
+        return audios_num
 
-        orig_sr = librosa.get_samplerate(audio_path)
+    def load_meta(self, meta_csv: str) -> Dict:
+        r"""Load meta dict.
+        """
 
-        segment_start_sample = int(segment_start_time * orig_sr)
-        segment_samples = int(self.segment_seconds * orig_sr)
+        df = pd.read_csv(meta_csv, sep=',')
 
-        audio, fs = torchaudio.load(
-            audio_path, 
-            frame_offset=segment_start_sample, 
-            num_frames=segment_samples
+        indexes = df["split"].values == self.split
+
+        meta_dict = {
+            "midi_name": df["midi_filename"].values[indexes],
+            "audio_name": df["audio_filename"].values[indexes],
+            "duration": df["duration"].values[indexes]
+        }
+
+        return meta_dict
+
+    def load_audio(self, path: str, offset: float) -> np.ndarray:
+
+        audio = load(
+            path,
+            sr=self.sr,
+            mono=self.mono,
+            offset=offset,
+            duration=self.clip_duration
         )
-        # (channels, audio_samples)
+        # shape: (channels, audio_samples)
 
-        audio = torch.mean(audio, dim=0)
-        # shape: (audio_samples,)
+        audio = librosa.util.fix_length(data=audio, size=self.clip_samples, axis=-1)
+        # shape: (channels, audio_samples)
 
-        audio = np.array(torchaudio.functional.resample(
-            waveform=audio, 
-            orig_freq=orig_sr, 
-            new_freq=self.sample_rate
-        ))
-        # shape: (audio_samples,)
-
-        audio = librosa.util.fix_length(data=audio, size=self.segment_samples, axis=0)
-        # from IPython import embed; embed(using=False); os._exit(0)
+        if self.transform is not None:
+            audio = self.transform(audio)
 
         return audio
 
-    def load_targets(self, midi_path, segment_start_time, string_processor):
+    def load_target(self, midi_path: str, clip_start_time: float) -> Dict:
+
+        pitches_num = MAESTRO.pitches_num
 
         notes, pedals = read_single_track_midi(midi_path=midi_path, extend_pedal=self.extend_pedal)
 
-        seg_start = segment_start_time
-        seg_end = seg_start + self.segment_seconds
-
-        label = "maestro-Piano"
-
-        note_data = notes_to_rolls_and_events(
-            notes=notes,
-            segment_frames=self.segment_frames, 
-            segment_start=seg_start,
-            segment_end=seg_end,
-            fps=self.fps,
-            label=label
+        target_data = notes_to_data(
+            notes=notes, 
+            clip_frames=self.clip_frames, 
+            classes_num=self.pitches_num, 
+            clip_start_time=clip_start_time, 
+            clip_duration=self.clip_duration, 
+            fps=self.fps
         )
 
-        if self.task == "onset":
+        if self.target_transform:
+            target_data = self.target_transform(target_data)
 
-            question_strings = [
-                "<sos>",
-                "task=onset",
-                "<eos>",
-            ]
+        return target_data
 
-            answer_strings = ["<sos>"]
 
-            active_notes = []
-            for note in note_data["notes"]:
-                if 0 <= note.start <= self.segment_seconds:
-                    active_notes.append(note)
+if __name__ == '__main__':
 
-            for note in active_notes:
+    # Example
+    import soundfile
+    from torch.utils.data import DataLoader
+    import matplotlib.pyplot as plt
 
-                onset_time = time_to_grid(note.start, self.fps)
-                offset_time = time_to_grid(note.end, self.fps)
-                pitch = note.pitch
-                velocity = note.velocity
+    root = "/datasets/maestro-v3.0.0"
 
-                answer_strings.extend([
-                    "time={}".format(onset_time),
-                    "pitch={}".format(pitch),
-                ])
-            
-            answer_strings.extend(["<eos>"])
-
-        elif self.task == "offset":
-
-            active_notes = note_data["notes"]
-
-            question_strings = ["<sos>", "task=offset"]
-            answer_strings = ["<sos>"]
-
-            for note in active_notes:
-
-                onset_time = time_to_grid(note.start, self.fps)
-                offset_time = time_to_grid(note.end, self.fps)
-                pitch = note.pitch
-                velocity = note.velocity
-
-                if onset_time < 0 and 0 <= offset_time <= self.segment_seconds:
-
-                    question_strings.extend([
-                        "name=note_sustain",
-                        "pitch={}".format(pitch),
-                        ])
-
-                    answer_strings.extend([
-                        "time={}".format(offset_time),
-                    ])
-
-                elif 0 <= onset_time <= offset_time <= self.segment_seconds:
-                    question_strings.extend([
-                        "time={}".format(onset_time),
-                        "pitch={}".format(pitch),
-                        ])
-
-                    answer_strings.extend([
-                        "time={}".format(offset_time),
-                    ])
-
-                elif 0 <= onset_time <= self.segment_seconds and self.segment_seconds < offset_time:
-                    question_strings.extend([
-                        "time={}".format(onset_time),
-                        "pitch={}".format(pitch),
-                        ])
-
-                    answer_strings.extend([
-                        "name=note_sustain",
-                    ])
-
-                elif onset_time < 0 and self.segment_seconds < offset_time:
-
-                    question_strings.extend([
-                        "name=note_sustain",
-                        "pitch={}".format(pitch),
-                        ])
-
-                    answer_strings.extend([
-                        "name=note_sustain",
-                    ])
-
-            question_strings.extend(["<eos>"])
-            answer_strings.extend(["<eos>"])
-
-        elif self.task == "velocity":
-
-            active_notes = note_data["notes"]
-
-            question_strings = ["<sos>", "task=velocity"]
-            answer_strings = ["<sos>"]
-
-            active_notes = []
-            for note in note_data["notes"]:
-                if 0 <= note.start <= self.segment_seconds:
-                    active_notes.append(note)
-
-            for note in active_notes:
-
-                onset_time = time_to_grid(note.start, self.fps)
-                offset_time = time_to_grid(note.end, self.fps)
-                pitch = note.pitch
-                velocity = note.velocity
-
-                question_strings.extend([
-                    "time={}".format(onset_time),
-                    "pitch={}".format(pitch),
-                ])
-
-                answer_strings.extend([
-                    "velocity={}".format(velocity),
-                ])
-
-            question_strings.extend(["<eos>"])
-            answer_strings.extend(["<eos>"])
-
-        else:
-            raise NotImplementedError
-
-        #
-        question_tokens = self.tokenizer.strings_to_tokens(question_strings)
-        question_tokens_num = len(question_tokens)
-
-        question_tokens = np.array(fix_length(
-            x=question_tokens, 
-            max_len=self.question_token_len, 
-            constant_value=self.tokenizer.stoi("<pad>")
-        ))
-
-        #
-        answer_tokens = self.tokenizer.strings_to_tokens(answer_strings)
-        answer_tokens_num = len(answer_tokens)
-
-        answer_tokens = np.array(fix_length(
-            x=answer_tokens, 
-            max_len=self.answer_token_len, 
-            constant_value=self.tokenizer.stoi("<pad>")
-        ))
-
-        targets_dict = {
-            "frame_roll": note_data["frame_roll"],
-            "onset_roll": note_data["onset_roll"],
-            "offset_roll": note_data["offset_roll"],
-            "velocity_roll": note_data["velocity_roll"],
-            "ped_frame_roll": None, # pedal_data["frame_roll"],
-            "ped_onset_roll": None, # pedal_data["onset_roll"],
-            "ped_offset_roll": None, # pedal_data["offset_roll"],
-            "question_string": question_strings,
-            "question_token": question_tokens,
-            "question_tokens_num": question_tokens_num,
-            "answer_string": answer_strings,
-            "answer_token": answer_tokens,
-            "answer_tokens_num": answer_tokens_num,
-        }
-
-        return targets_dict
-
-
-class MaestroMultiTask5:
-    def __init__(
-        self, 
-        root: str = None, 
-        split: str = "train",
-        segment_seconds: float = 10.,
-        tokenizer=None,
-        max_token_len=None,
-        task=None,
-        extend_pedal=True,
-    ):
-
-        self.root = root
-        self.split = split
-        self.segment_seconds = segment_seconds
-        self.tokenizer = tokenizer
-        self.max_token_len = max_token_len
-        self.task = task
-
-        self.sample_rate = 16000
-        self.fps = 100
-        self.pitches_num = 128
-        self.segment_frames = int(self.segment_seconds * self.fps) + 1
-        self.segment_samples = int(self.segment_seconds * self.sample_rate)
-
-        self.extend_pedal = extend_pedal
-
-        self.meta_csv = Path(self.root, "maestro-v3.0.0.csv")
-
-        self.load_meta()
-                
-    def load_meta(self):
-
-        df = pd.read_csv(self.meta_csv, sep=',')
-
-        indexes = df["split"].values == self.split
-
-        self.midi_filenames = df["midi_filename"].values[indexes]
-        self.audio_filenames = df["audio_filename"].values[indexes]
-        self.durations = df["duration"].values[indexes]
-        self.audios_num = len(self.midi_filenames)
-
-    def __getitem__(self, index):
-        # t1 = time.time()
-        audio_path = Path(self.root, self.audio_filenames[index])
-        midi_path = Path(self.root, self.midi_filenames[index]) 
-        duration = self.durations[index]
-
-        # segment_start_time = random.uniform(0, duration - self.segment_seconds)
-        segment_start_time = random.uniform(0, duration)
-
-        if False:
-            index = 0
-            index = 27
-            audio_path = Path(self.root, self.audio_filenames[0])
-            midi_path = Path(self.root, self.midi_filenames[0]) 
-            segment_start_time = 12.780630179249533
-
-        # Load audio.
-        audio = self.load_audio(audio_path, segment_start_time)
-        # shape: (audio_samples)
-
-        string_processor = MaestroStringProcessor(
-            label=False,
-            onset=True,
-            offset=False,
-            sustain=False,
-            velocity=False,
-            pedal_onset=False,
-            pedal_offset=False,
-            pedal_sustain=False,
-        )
-
-        targets_dict = self.load_targets(
-            midi_path=midi_path, 
-            segment_start_time=segment_start_time, 
-            string_processor=string_processor,
-        )
-        # shape: (tokens_num,)
-
-        data = {
-            "audio_path": audio_path,
-            "segment_start_time": segment_start_time,
-            "audio": audio,
-            "frame_roll": targets_dict["frame_roll"],
-            "onset_roll": targets_dict["onset_roll"],
-            "offset_roll": targets_dict["offset_roll"],
-            "velocity_roll": targets_dict["velocity_roll"],
-            "string": targets_dict["string"],
-            "token": targets_dict["token"],
-            "tokens_num": targets_dict["tokens_num"],
-            "mask": targets_dict["mask"],
-        }
-
-        debug = False
-        if debug:
-            strings = self.tokenizer.tokens_to_strings(targets_dict["token"])
-            events = string_processor.strings_to_events(strings)
-            notes = events_to_notes(events)
-            notes_to_midi(notes, "_zz.mid")
-            soundfile.write(file="_zz.wav", data=audio, samplerate=self.sample_rate)
-            from IPython import embed; embed(using=False); os._exit(0)
-
-        # print("a2", time.time() - t1)
-        # t1 = time.time()
-
-        return data
-
-
-    def __len__(self):
-
-        return self.audios_num
-
-    def load_audio(self, audio_path, segment_start_time):
-
-        orig_sr = librosa.get_samplerate(audio_path)
-
-        segment_start_sample = int(segment_start_time * orig_sr)
-        segment_samples = int(self.segment_seconds * orig_sr)
-
-        audio, fs = torchaudio.load(
-            audio_path, 
-            frame_offset=segment_start_sample, 
-            num_frames=segment_samples
-        )
-        # (channels, audio_samples)
-
-        audio = torch.mean(audio, dim=0)
-        # shape: (audio_samples,)
-
-        audio = np.array(torchaudio.functional.resample(
-            waveform=audio, 
-            orig_freq=orig_sr, 
-            new_freq=self.sample_rate
-        ))
-        # shape: (audio_samples,)
-
-        audio = librosa.util.fix_length(data=audio, size=self.segment_samples, axis=0)
-        # from IPython import embed; embed(using=False); os._exit(0)
-
-        return audio
-
-    def load_targets(self, midi_path, segment_start_time, string_processor):
-
-        notes, pedals = read_single_track_midi(midi_path=midi_path, extend_pedal=self.extend_pedal)
-
-        seg_start = segment_start_time
-        seg_end = seg_start + self.segment_seconds
-
-        label = "maestro-Piano"
-
-        note_data = notes_to_rolls_and_events(
-            notes=notes,
-            segment_frames=self.segment_frames, 
-            segment_start=seg_start,
-            segment_end=seg_end,
-            fps=self.fps,
-            label=label
-        )
-
-        if self.task == "onset":
-
-            strings = [
-                "<sos>",
-                "task=onset",
-            ]
-            masks = [0, 0]
-
-            active_notes = []
-            for note in note_data["notes"]:
-                if 0 <= note.start <= self.segment_seconds:
-                    active_notes.append(note)
-
-            for note in active_notes:
-
-                onset_time = time_to_grid(note.start, self.fps)
-                offset_time = time_to_grid(note.end, self.fps)
-                pitch = note.pitch
-                velocity = note.velocity
-
-                strings.extend([
-                    "time={}".format(onset_time),
-                    "pitch={}".format(pitch),
-                ])
-                masks.extend([1, 1])
-            
-            strings.extend(["<eos>"])
-            masks.extend([1])
-
-        elif self.task == "offset":
-
-            active_notes = note_data["notes"]
-
-            strings = ["<sos>", "task=offset"]
-            masks = [0, 0]
-
-            for note in active_notes:
-
-                onset_time = time_to_grid(note.start, self.fps)
-                offset_time = time_to_grid(note.end, self.fps)
-                pitch = note.pitch
-                velocity = note.velocity
-
-                if onset_time < 0 and 0 <= offset_time <= self.segment_seconds:
-
-                    strings.extend([
-                        "name=note_sustain",
-                        "pitch={}".format(pitch),
-                        "time={}".format(offset_time)
-                    ])
-
-                elif 0 <= onset_time <= offset_time <= self.segment_seconds:
-                    strings.extend([
-                        "time={}".format(onset_time),
-                        "pitch={}".format(pitch),
-                        "time={}".format(offset_time),
-                    ])
-
-                elif 0 <= onset_time <= self.segment_seconds and self.segment_seconds < offset_time:
-                    strings.extend([
-                        "time={}".format(onset_time),
-                        "pitch={}".format(pitch),
-                        "name=note_sustain",
-                    ])
-
-                elif onset_time < 0 and self.segment_seconds < offset_time:
-
-                    strings.extend([
-                        "name=note_sustain",
-                        "pitch={}".format(pitch),
-                        "name=note_sustain",
-                    ])
-
-                masks.extend([0, 0, 1])
-
-            strings.extend(["<eos>"])
-            masks.extend([1])
-
-        elif self.task == "velocity":
-
-            strings = [
-                "<sos>",
-                "task=velocity",
-            ]
-            masks = [0, 0]
-
-            active_notes = []
-            for note in note_data["notes"]:
-                if 0 <= note.start <= self.segment_seconds:
-                    active_notes.append(note)
-
-            for note in active_notes:
-
-                onset_time = time_to_grid(note.start, self.fps)
-                offset_time = time_to_grid(note.end, self.fps)
-                pitch = note.pitch
-                velocity = note.velocity
-
-                strings.extend([
-                    "time={}".format(onset_time),
-                    "pitch={}".format(pitch),
-                    "velocity={}".format(velocity)
-                ])
-                masks.extend([0, 0, 1])
-            
-            strings.extend(["<eos>"])
-            masks.extend([1])
-
-        else:
-            raise NotImplementedError
-
-        #
-        tokens = self.tokenizer.strings_to_tokens(strings)
-        tokens_num = len(tokens)
-
-        tokens = np.array(fix_length(
-            x=tokens, 
-            max_len=self.max_token_len, 
-            constant_value=self.tokenizer.stoi("<pad>")
-        ))
-        masks = np.array(fix_length(
-            x=masks, 
-            max_len=self.max_token_len, 
-            constant_value=0
-        ))
-        
-        targets_dict = {
-            "frame_roll": note_data["frame_roll"],
-            "onset_roll": note_data["onset_roll"],
-            "offset_roll": note_data["offset_roll"],
-            "velocity_roll": note_data["velocity_roll"],
-            "ped_frame_roll": None, # pedal_data["frame_roll"],
-            "ped_onset_roll": None, # pedal_data["onset_roll"],
-            "ped_offset_roll": None, # pedal_data["offset_roll"],
-            "string": strings,
-            "token": tokens,
-            "tokens_num": tokens_num,
-            "mask": masks
-        }
-
-        return targets_dict
-
-
-class MaestroStringProcessor:
-    def __init__(self, 
-        label: bool,
-        onset: bool, 
-        offset: bool, 
-        sustain: bool, 
-        velocity: bool, 
-        pedal_onset: bool, 
-        pedal_offset: bool, 
-        pedal_sustain: bool, 
-    ):
-        self.label = label
-        self.onset = onset
-        self.offset = offset
-        self.sustain = sustain
-        self.velocity = velocity
-        self.pedal_onset = pedal_onset
-        self.pedal_offset = pedal_offset
-        self.pedal_sustain = pedal_sustain
-
-    def events_to_strings(self, events):
-
-        strings = ["<sos>"]
-
-        for e in events:
-
-            if e["name"] == "note_on":
-                if self.onset:
-                    strings = self.append_name(strings, e["name"])
-                    strings = self.append_time(strings, e["time"])
-                    strings = self.append_label(strings, e["label"])
-                    strings = self.append_pitch(strings, e["pitch"])
-                    strings = self.append_velocity(strings, e["velocity"])
-                
-            elif e["name"] == "note_off":
-                if self.offset:
-                    strings = self.append_name(strings, e["name"])
-                    strings = self.append_time(strings, e["time"])
-                    strings = self.append_label(strings, e["label"])
-                    strings = self.append_pitch(strings, e["pitch"])
-
-            elif e["name"] == "note_sustain":
-                if self.sustain:
-                    strings = self.append_name(strings, e["name"])
-                    strings = self.append_time(strings, e["time"])
-                    strings = self.append_label(strings, e["label"])
-                    strings = self.append_pitch(strings, e["pitch"])
-
-            elif e["name"] == "pedal_on":
-                if self.pedal_onset:
-                    strings = self.append_name(strings, e["name"])
-                    strings = self.append_time(strings, e["time"])
-                    strings = self.append_label(strings, e["label"])
-
-            elif e["name"] == "pedal_off":
-                if self.pedal_offset:
-                    strings = self.append_name(strings, e["name"])
-                    strings = self.append_time(strings, e["time"])
-                    strings = self.append_label(strings, e["label"])
-
-            elif e["name"] == "pedal_sustain":
-                if self.pedal_sustain:
-                    strings = self.append_name(strings, e["name"])
-                    strings = self.append_time(strings, e["time"])
-                    strings = self.append_label(strings, e["label"])
-
-            else:
-                raise NotImplementedError
-
-        strings.append("<eos>")
-        
-        return strings
-
-    def strings_to_events(self, strings):
-
-        event = None
-        events = []
-
-        for w in strings:
-
-            if "=" in w:
-                key = re.search('(.*)=', w).group(1)
-                value = re.search('{}=(.*)'.format(key), w).group(1)
-                value = self.format_value(key, value)
-
-                if key == "name":
-                    if event is not None:
-                        events.append(event)
-                    event = {}
-
-                event[key] = value
-
-            if w == "<eos>" and event is not None:
-                events.append(event)
-                break
-                
-
-        new_events = []
-
-        for e in events:
-            
-            if e["name"] == "note_on":
-
-                if not self.velocity:
-                    e["velocity"] = 100
-
-                new_events.append(e)
-
-                if not self.offset:
-                    event = {
-                        "name": "note_off",
-                        "time": float(e["time"]) + 0.1,
-                        "pitch": e["pitch"]
-                    }
-                    new_events.append(event)
-
-            elif e["name"] == "note_off":
-                new_events.append(e)
-
-        # try:
-        new_events.sort(key=lambda e: (e["time"], e["name"], e["pitch"]))
-        # except:
-        #     from IPython import embed; embed(using=False); os._exit(0)
-        
-        return new_events
-
-
-    def append_name(self, strings, name):
-        
-        strings.append("name={}".format(name))
-
-        return strings
-
-    def append_time(self, strings, time):
-        
-        strings.append("time={}".format(time))
-
-        return strings
-
-    def append_pitch(self, strings, pitch):
-        
-        strings.append("pitch={}".format(pitch))
-
-        return strings
-
-    def append_label(self, strings, lab):
-        
-        if self.label:
-            strings.append("label={}".format(lab))
-
-        return strings
-
-    def append_velocity(self, strings, vel):
-        
-        if self.velocity:
-            strings.append("velocity={}".format(vel))
-
-        return strings
-
-    def format_value(self, key, value):
-        if key in ["time"]:
-            return float(value)
-
-        elif key in ["pitch", "velocity"]:
-            return int(value)
-
-        else:
-            return value
-
-
-
-
-def test():
-
-    root = "/datasets/maestro-v2.0.0/maestro-v2.0.0"
-
-    
-    tokenizer = Tokenizer()
+    sr = 16000
 
     # Dataset
-    dataset = Maestro(
+    dataset = MAESTRO(
         root=root,
         split="train",
-        segment_seconds=10.,
-        tokenizer=tokenizer,
-        max_token_len=1024,
+        sr=sr,
+        clip_duration=10.,
     )
 
-    data = dataset[0]
-    
-    audio = data["audio"]
-    frame_roll = data["frame_roll"]
-    onset_roll = data["onset_roll"]
-    offset_roll = data["offset_roll"]
-    velocity_roll = data["velocity_roll"]
-    tokens = data["token"]
-    tokens_num = data["tokens_num"]
-    string_processor = data["string_processor"]
+    dataloader = DataLoader(
+        dataset=dataset, 
+        batch_size=4, 
+        num_workers=0, 
+    )
 
-    # Convert tokens to strings
-    strings = tokenizer.tokens_to_strings(tokens)
-    events = string_processor.strings_to_events(strings)
-    notes = events_to_notes(events)
+    for data in dataloader:
 
-    notes_to_midi(notes, "_zz.mid")
-    soundfile.write(file="_zz.wav", data=audio, samplerate=16000)
+        n = 0
+        audio = data["audio"][n].cpu().numpy()
+        frame_roll = data["frame_roll"][n].cpu().numpy()
+        onset_roll = data["onset_roll"][n].cpu().numpy()
+        offset_roll = data["offset_roll"][n].cpu().numpy()
+        velocity_roll = data["velocity_roll"][n].cpu().numpy()
+        break
 
-    from IPython import embed; embed(using=False); os._exit(0)
+    # Write audio
+    out_path = "out.wav"
+    soundfile.write(file=out_path, data=audio.T, samplerate=sr)
+    print("Write out audio to {}".format(out_path))
 
+    # Mel spectrogram
+    mel = librosa.feature.melspectrogram(y=audio[0], sr=sr, n_fft=2048, 
+        hop_length=160, n_mels=229, fmin=0, fmax=8000)
 
-if __name__ == "__main__":
-
-    test()
+    # Plot
+    fig, axs = plt.subplots(5, 1, sharex=True, figsize=(20, 15))
+    axs[0].matshow(np.log(mel), origin='lower', aspect='auto', cmap='jet')
+    axs[1].matshow(frame_roll.T, origin='lower', aspect='auto', cmap='jet', vmin=0, vmax=1)
+    axs[1].matshow(frame_roll.T, origin='lower', aspect='auto', cmap='jet', vmin=0, vmax=1)
+    axs[2].matshow(onset_roll.T, origin='lower', aspect='auto', cmap='jet', vmin=0, vmax=1)
+    axs[3].matshow(offset_roll.T, origin='lower', aspect='auto', cmap='jet', vmin=0, vmax=1)
+    axs[4].matshow(velocity_roll.T, origin='lower', aspect='auto', cmap='jet', vmin=0, vmax=1)
+    fig_path = "out.pdf"
+    plt.savefig(fig_path)
+    print("Write out fig to {}".format(fig_path))

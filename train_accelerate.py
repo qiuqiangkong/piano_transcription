@@ -8,6 +8,7 @@ import torch.optim as optim
 from tqdm import tqdm
 import argparse
 import random
+from accelerate import Accelerator
 import wandb
 wandb.require("core")
 
@@ -34,9 +35,9 @@ def train(args):
     debug = False
     wandb_log = True
     device = "cuda"
-    classes_num = MAESTRO.pitches_num
 
     filename = Path(__file__).stem
+    classes_num = MAESTRO.pitches_num
 
     checkpoints_dir = Path("./checkpoints", filename, model_name)
 
@@ -89,6 +90,11 @@ def train(args):
     # Optimizer
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
 
+    # Prepare for multiprocessing
+    accelerator = Accelerator()
+
+    model, optimizer, train_dataloader = accelerator.prepare(model, optimizer, train_dataloader)
+
     # Create checkpoints directory
     Path(checkpoints_dir).mkdir(parents=True, exist_ok=True)
 
@@ -112,29 +118,44 @@ def train(args):
 
         # Optimize
         optimizer.zero_grad()   # Reset all parameter.grad to 0
-        loss.backward()     # Update all parameter.grad
+        accelerator.backward(loss)     # Update all parameter.grad
         optimizer.step()    # Update all parameters based on all parameter.grad
 
         if step % test_step_frequency == 0:
-            print("step: {}, loss: {:.3f}".format(step, loss.item()))
-            test_loss = validate(model, test_dataloader)
-            print("Loss: {}".format(test_loss))
 
-            if wandb_log:
-                wandb.log(
-                    data={"test_loss": test_loss},
-                    step=step
-                )
+            accelerator.wait_for_everyone()
+
+            if accelerator.is_main_process:
+
+                if accelerator.num_processes == 1:
+                    val_model = model
+                else:
+                    val_model = model.module
+
+                print("step: {}, loss: {:.3f}".format(step, loss.item()))
+                test_loss = validate(val_model, test_dataloader)
+                print("Test loss: {}".format(test_loss))
+
+                if wandb_log:
+                    wandb.log(
+                        data={"test_loss": test_loss},
+                        step=step
+                    )
 
         # Save model
         if step % save_step_frequency == 0:
-            checkpoint_path = Path(checkpoints_dir, "step={}.pth".format(step))
-            torch.save(model.state_dict(), checkpoint_path)
-            print("Save model to {}".format(checkpoint_path))
 
-            checkpoint_path = Path(checkpoints_dir, "latest.pth")
-            torch.save(model.state_dict(), Path(checkpoint_path))
-            print("Save model to {}".format(checkpoint_path))
+            accelerator.wait_for_everyone()
+
+            if accelerator.is_main_process:
+
+                checkpoint_path = Path(checkpoints_dir, "step={}.pth".format(step))
+                torch.save(model.state_dict(), checkpoint_path)
+                print("Save model to {}".format(checkpoint_path))
+
+                checkpoint_path = Path(checkpoints_dir, "latest.pth")
+                torch.save(model.state_dict(), Path(checkpoint_path))
+                print("Save model to {}".format(checkpoint_path))
 
         if step == training_steps:
             break

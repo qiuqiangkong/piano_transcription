@@ -1,62 +1,64 @@
-import numpy as np
 import random
 import librosa
+from typing import Union
 import torch
 import torchaudio
+import numpy as np
 
 
-class AudioIO:
-    def __init__(self):
-        pass
+def load(
+    path: str, 
+    sr: int, 
+    mono: bool = True,
+    offset: float = 0.,  # Load start time
+    duration: Union[float, None] = None  # Load duration
+) -> np.ndarray:
+    r"""Load audio.
 
-    def random_start_time(self, duration):
+    Returns:
+       audio: (channels, audio_samples) 
 
-        if self._segment_seconds is None:
-            # Full audio.
-            seg_start_time = 0
-            seg_seconds = duration
+    Examples:
+        >>> audio = load_audio(path="xx/yy.wav", sr=16000)
+    """
+    
+    # Prepare arguments
+    orig_sr = librosa.get_samplerate(path)
 
-        else:
-            # Random segment of an audio.
-            if duration < self._segment_seconds:
-                seg_start_time = 0
-            else:
-                seg_start_time = random.uniform(0, duration - self._segment_seconds)
-                
-            seg_seconds = self._segment_seconds
+    seg_start_sample = round(offset * orig_sr)
 
-        return seg_start_time, seg_seconds
+    if duration is None:
+        seg_samples = -1
+    else:
+        seg_samples = round(duration * orig_sr)
 
-    def load_audio(self, audio_path, segment_start_time, segment_seconds):
+    # Load audio
+    audio, fs = torchaudio.load(
+        path, 
+        frame_offset=seg_start_sample, 
+        num_frames=seg_samples
+    )
+    # (channels, audio_samples)
 
-        orig_sr = librosa.get_samplerate(audio_path)
+    # Resample. Faster than librosa
+    audio = torchaudio.functional.resample(
+        waveform=audio, 
+        orig_freq=orig_sr, 
+        new_freq=sr
+    )
+    # shape: (channels, audio_samples)
 
-        orig_seg_start_sample = round(segment_start_time * orig_sr)
-        orig_seg_samples = round(segment_seconds * orig_sr)
+    if mono:
+        audio = torch.mean(audio, dim=0, keepdim=True)
 
-        audio, fs = torchaudio.load(
-            audio_path, 
-            frame_offset=orig_seg_start_sample, 
-            num_frames=orig_seg_samples
-        )
-        # (channels, audio_samples)
+    audio = audio.numpy()
 
-        audio = torch.mean(audio, dim=0)
-        # shape: (audio_samples,)
+    return audio
 
-        audio = torchaudio.functional.resample(
-            waveform=audio, 
-            orig_freq=orig_sr, 
-            new_freq=self.sample_rate
-        )
-        # shape: (audio_samples,)
 
-        new_seg_samples = round(segment_seconds * self.sample_rate)
-        
-        audio = librosa.util.fix_length(
-            data=np.array(audio), 
-            size=new_seg_samples, 
-            axis=0
-        )
-
-        return audio
+def random_start_time(path: str) -> float:
+    r"""Get a random start time of a audio.
+    """
+    duration = librosa.get_duration(path=path)
+    seg_start_time = random.uniform(0, duration - 0.1)
+    return seg_start_time
