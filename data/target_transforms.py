@@ -1,6 +1,7 @@
+from typing import Dict, List
+
 import librosa
 import numpy as np
-from typing import Dict, List
 
 from data.tokenizers import BaseTokenizer
 

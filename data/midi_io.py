@@ -1,15 +1,16 @@
-import time
 import copy
 import math
-import numpy as np
+import time
 from typing import List, Tuple
-from pretty_midi import Note, PrettyMIDI, ControlChange
+
+import numpy as np
+from pretty_midi import ControlChange, Note, PrettyMIDI
 
 
 def read_single_track_midi(
     midi_path: str, 
     extend_pedal: bool
-):
+) -> Tuple(List[Note], List[Pedal]):
     r"""Read note and pedals from a single-track MIDI file.
 
     Returns:
@@ -77,7 +78,7 @@ def get_pedals(control_changes: List[ControlChange]) -> List[Pedal]:
 def extend_offset_by_pedal(
     notes: List[Note], 
     pedals: List[Pedal]
-):
+) -> List[Note]:
     r"""Extend the note offset times to pedal offset times.
 
     Returns:
@@ -146,7 +147,7 @@ def notes_to_data(
     clip_start_time: float, 
     clip_duration: float, 
     fps: int
-):
+) -> Dict:
     r"""Transform the whole piece notes to onset roll, offset roll, frame roll, 
     velocity roll, and notes within a short cilp.
 
@@ -248,7 +249,3 @@ def notes_to_data(
     }
 
     return data
-
-
-# def time_to_grid(time, fps):
-#     return round(time * fps) / fps

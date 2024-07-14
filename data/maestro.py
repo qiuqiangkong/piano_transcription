@@ -1,20 +1,15 @@
-from typing import Callable, Dict, Optional, Tuple, Union
-import re
-import os
-import time
-import torch
 from pathlib import Path
-import pandas as pd
-import random
+from typing import Callable, Dict, Optional
+
 import librosa
-import torchaudio
 import numpy as np
+import pandas as pd
 from torch.utils.data import Dataset
 from torch.utils.data._utils.collate import default_collate_fn_map
 
 from data.audio_io import load, random_start_time
-from data.midi_io import read_single_track_midi, notes_to_data
 from data.collate import collate_list_fn
+from data.midi_io import notes_to_data, read_single_track_midi
 
 default_collate_fn_map.update({list: collate_list_fn})
 
@@ -83,7 +78,7 @@ class MAESTRO(Dataset):
 
         self.meta_dict = self.load_meta(meta_csv)
         
-    def __getitem__(self, index):
+    def __getitem__(self, index: int) -> Dict:
 
         audio_path = Path(self.root, self.meta_dict["audio_name"][index])
         midi_path = Path(self.root, self.meta_dict["midi_name"][index]) 
@@ -173,11 +168,12 @@ class MAESTRO(Dataset):
 
 
 if __name__ == '__main__':
+    r"""Example.
+    """
 
-    # Example
+    import matplotlib.pyplot as plt
     import soundfile
     from torch.utils.data import DataLoader
-    import matplotlib.pyplot as plt
 
     root = "/datasets/maestro-v3.0.0"
 
@@ -206,6 +202,13 @@ if __name__ == '__main__':
         offset_roll = data["offset_roll"][n].cpu().numpy()
         velocity_roll = data["velocity_roll"][n].cpu().numpy()
         break
+
+    # ------ Visualize ------
+    print("audio:", audio.shape)
+    print("frame_roll:", frame_roll.shape)
+    print("onset_roll:", frame_roll.shape)
+    print("offset_roll:", frame_roll.shape)
+    print("velocity_roll:", frame_roll.shape)
 
     # Write audio
     out_path = "out.wav"

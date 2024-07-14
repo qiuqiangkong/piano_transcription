@@ -1,19 +1,19 @@
-import torch
-import torch.nn.functional as F
-from torch.utils.data.sampler import SequentialSampler
-import numpy as np
-import soundfile
-from pathlib import Path
-import torch.optim as optim
-from tqdm import tqdm
 import argparse
-import random
+from pathlib import Path
+
+import torch
+import torch.optim as optim
 from accelerate import Accelerator
+from torch.utils.data import DataLoader
+from torch.utils.data.sampler import SequentialSampler
+from tqdm import tqdm
+
 import wandb
+
 wandb.require("core")
 
 from data.maestro import MAESTRO
-from models.crnn import CRnn
+from train import InfiniteSampler, bce_loss, get_model, validate
 
 
 def train(args):
@@ -24,7 +24,6 @@ def train(args):
     # Default parameters
     sr = 16000
     clip_duration = 10.
-    extend_pedal = True
     batch_size = 16
     num_workers = 16
     pin_memory = True
@@ -32,7 +31,6 @@ def train(args):
     test_step_frequency = 1000
     save_step_frequency = 1000
     training_steps = 10000
-    debug = False
     wandb_log = True
     device = "cuda"
 
@@ -67,7 +65,7 @@ def train(args):
     test_sampler = SequentialSampler(test_dataset)
     
     # Dataloader
-    train_dataloader = torch.utils.data.DataLoader(
+    train_dataloader = DataLoader(
         dataset=train_dataset, 
         batch_size=batch_size, 
         sampler=train_sampler,
@@ -75,7 +73,7 @@ def train(args):
         pin_memory=pin_memory
     )
 
-    test_dataloader = torch.utils.data.DataLoader(
+    test_dataloader = DataLoader(
         dataset=test_dataset, 
         batch_size=batch_size, 
         sampler=test_sampler,
@@ -104,10 +102,6 @@ def train(args):
         # Move data to device
         audio = data["audio"].to(device)
         target_onset_roll = data["onset_roll"].to(device)
-
-        # Play the audio
-        if debug:
-            play_audio(mixture, target)
 
         # Forward
         model.train()
@@ -159,68 +153,6 @@ def train(args):
 
         if step == training_steps:
             break
-
-
-def get_model(model_name, classes_num):
-    if model_name == "CRnn":
-        return CRnn(classes_num)
-    else:
-        raise NotImplementedError
-
-
-def bce_loss(output, target):
-    return F.binary_cross_entropy(output, target)
-
-
-def play_audio(mixture, target):
-    soundfile.write(file="tmp_mixture.wav", data=mixture[0].cpu().numpy().T, samplerate=44100)
-    soundfile.write(file="tmp_target.wav", data=target[0].cpu().numpy().T, samplerate=44100)
-    from IPython import embed; embed(using=False); os._exit(0)
-
-
-class InfiniteSampler:
-    def __init__(self, dataset):
-
-        self.indexes = list(range(len(dataset)))
-        random.shuffle(self.indexes)
-        
-    def __iter__(self):
-
-        pointer = 0
-
-        while True:
-
-            if pointer == len(self.indexes):
-                random.shuffle(self.indexes)
-                pointer = 0
-                
-            index = self.indexes[pointer]
-            pointer += 1
-
-            yield index
-
-
-def validate(model, dataloader):
-
-    device = next(model.parameters()).device
-
-    losses = []
-
-    for step, data in tqdm(enumerate(dataloader)):
-        
-        audio = torch.Tensor(data["audio"]).to(device)
-        target_onset_roll = torch.Tensor(data["onset_roll"]).to(device)
-
-        with torch.no_grad():
-            model.eval()
-            output_dict = model(audio=audio)
-
-        loss = bce_loss(output_dict["onset_roll"], target_onset_roll)
-        losses.append(loss.item())
-
-    loss = np.mean(losses)
-
-    return loss
 
 
 if __name__ == "__main__":

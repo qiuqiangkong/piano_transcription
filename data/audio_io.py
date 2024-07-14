@@ -1,9 +1,10 @@
 import random
-import librosa
 from typing import Union
+
+import librosa
+import numpy as np
 import torch
 import torchaudio
-import numpy as np
 
 
 def load(

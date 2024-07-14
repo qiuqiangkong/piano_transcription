@@ -1,8 +1,9 @@
-import re
-import numpy as np
-from typing import List
 import bisect
 import itertools
+import re
+from typing import List
+
+import numpy as np
 
 
 class BaseTokenizer:
@@ -139,6 +140,8 @@ class ConcatTokenizer:
 
 
 if __name__ == '__main__':
+    r"""Example.
+    """
 
     tokenizer = ConcatTokenizer([
         SpecialTokenizer(),
@@ -163,5 +166,3 @@ if __name__ == '__main__':
     token = tokenizer.stoi("velocity=34")
     word = tokenizer.itos(token)
     print(token, word)
-
-    from IPython import embed; embed(using=False); os._exit(0)
