@@ -72,7 +72,7 @@ CUDA_VISIBLE_DEVICES=0 python inference.py \
 	--midi_path="./results/cut_liszt.midi"
 ```
 
-The transcribed result can be listened at [./results/cut_liszt.midi](https://github.com/qiuqiangkong/piano_transcription/results/cut_liszt.midi)
+The transcribed result can be listened at [results/cut_liszt.midi](https://github.com/qiuqiangkong/piano_transcription/blob/kqq/results/cut_liszt.midi)
 
 ## 4. Evaluate
 
