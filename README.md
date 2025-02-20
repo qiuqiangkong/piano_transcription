@@ -67,7 +67,7 @@ wget -O ./checkpoints/train/conformer2d/step=200000.pth https://huggingface.co/q
 ```python
 CUDA_VISIBLE_DEVICES=0 python inference.py \
 	--config="./configs/conformer2d.yaml" \
-	--ckpt_path="./checkpoints/train/01a/step=200000.pth" \
+	--ckpt_path="./checkpoints/train/conformer2d/step=200000.pth" \
 	--audio_path="./assets/cut_liszt.mp3" \
 	--midi_path="./results/cut_liszt.midi"
 ```
@@ -81,16 +81,16 @@ Evaluate the precision, recall, and F1 scores on the test set of the MAESTRO dat
 ```python
 CUDA_VISIBLE_DEVICES=0 python evaluate.py \
 	--config="./configs/conformer2d.yaml" \
-	--ckpt_path="./checkpoints/train/01a/step=200000.pth" \
+	--ckpt_path="./checkpoints/train/conformer2d/step=200000.pth" \
 	--results_dir="./results/conformer2d"
 ```
 
 <pre>
 0/177, /datasets/maestro-v3.0.0/2009/MIDI-Unprocessed_11_R1_2009_06-09_ORIG_MID--AUDIO_11_R1_2009_11_R1_2009_07_WAV.wav                                                                                   
-Write out to results/01a/MIDI-Unprocessed_11_R1_2009_06-09_ORIG_MID--AUDIO_11_R1_2009_11_R1_2009_07_WAV.midi                                                                                              
+Write out to results/conformer2d/MIDI-Unprocessed_11_R1_2009_06-09_ORIG_MID--AUDIO_11_R1_2009_11_R1_2009_07_WAV.midi                                                                                              
 Precision: 0.9201, Recall: 0.9098, F1: 0.9149                                                                                                                                                             
 35/177, /datasets/maestro-v3.0.0/2015/MIDI-Unprocessed_R2_D2-12-13-15_mid--AUDIO-from_mp3_13_R2_2015_wav--4.wav                                                                                           
-Write out to results/01a/MIDI-Unprocessed_R2_D2-12-13-15_mid--AUDIO-from_mp3_13_R2_2015_wav--4.midi                                                                                                       
+Write out to results/conformer2d/MIDI-Unprocessed_R2_D2-12-13-15_mid--AUDIO-from_mp3_13_R2_2015_wav--4.midi                                                                                                       
 Precision: 0.9182, Recall: 0.8825, F1: 0.9000                                                                                                                                                             
 ...
 ------ Average metric ------                                                                                                                                                                              

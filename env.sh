@@ -7,3 +7,5 @@ pip install audidata==0.0.3
 pip install librosa==0.10.2
 pip install pretty_midi==0.2.10
 pip install mir_eval==0.8.0
+pip install einops==0.8.0
+pip install matplotlib==3.9.2
