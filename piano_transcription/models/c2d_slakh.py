@@ -54,6 +54,8 @@ class Conformer2D(Fourier):
         self.encoder_blocks = nn.ModuleList(Block(config) for _ in range(config.enc_layers))
         self.decoder_blocks = nn.ModuleList(Block(config) for _ in range(config.dec_layers))
 
+        from IPython import embed; embed(using=False); os._exit(0)
+
         self.post_fc = nn.Linear(1024, 3 * self.downsample_factor * self.pitches_num)
         # 3 indicates on + off + frame
 

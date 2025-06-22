@@ -12,9 +12,8 @@ import wandb
 from audidata.samplers import InfiniteSampler
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
-import librosa
 
-from piano_transcription.utils import LinearWarmUp, parse_yaml, write_midi
+from piano_transcription.utils import LinearWarmUp, parse_yaml
 
 
 def train(args) -> None:
@@ -74,7 +73,9 @@ def train(args) -> None:
         target_dict = {
             "frame_roll": data["frame_roll"].to(device),  # (b, t, k)
             "onset_roll": data["onset_roll"].to(device),  # (b, t, k)
-            "offset_roll": data["offset_roll"].to(device)  # (b, t, k)
+            "offset_roll": data["offset_roll"].to(device),  # (b, t, k)
+            "drum_roll": data["drum_roll"].to(device),  # (b, t, k)
+            "program_roll": data["program_roll"].to(device)  # (b, t, k)
         }
 
         # 1.2 Forward
@@ -95,17 +96,12 @@ def train(args) -> None:
 
         if step % 100 == 0:
             print(loss)
-
-            if "code" in output_dict.keys():
-                print("active: {:3f}".format(output_dict["code"].unique().numel() / model.num_codes))
-                # print(f"active %: {:.3f}")
         
         # ------ 2. Evaluation ------
         # 2.1 Evaluate
         if step % configs["train"]["test_every_n_steps"] == 0:
             # TODO. No validation now.
-            out_dir = Path("results", filename, config_name, f"step={step}")
-            validate(configs, model, out_dir)
+            pass
 
         # 2.2 Save model
         if step % configs["train"]["save_every_n_steps"] == 0:
@@ -154,6 +150,25 @@ def get_dataset(
             )
             return dataset
 
+        elif name == "Slakh2100":
+
+            from audidata.datasets.slakh2100 import Slakh2100
+            from audidata.transforms.midi import ReductToPianoRoll
+
+            from piano_transcription.update_collate import default_collate_fn_map
+
+            target_transform = ReductToPianoRoll()
+
+            dataset = Slakh2100(
+                root=configs[datasets_split][name]["root"],
+                split="train",
+                sr=sr,
+                crop=RandomCrop(clip_duration=10., end_pad=9.9),
+                target_transform=target_transform,
+            )
+
+            return dataset
+
         else:
             raise ValueError(name)
 
@@ -166,9 +181,9 @@ def get_model(
 
     name = configs["model"]["name"]
 
-    if name == "Conformer2D":
+    if name == "Conformer2D_nopool_slakh":
 
-        from piano_transcription.models.conformer2d import (Conformer2D,
+        from piano_transcription.models.conformer2d_nopool import (Conformer2D_nopool_slakh,
                                                             Conformer2DConfig)
 
         config = Conformer2DConfig(
@@ -177,55 +192,7 @@ def get_model(
             hop_length=configs["model"]["hop_length"],
         )
 
-        model = Conformer2D(config)
-
-    elif name == "Conformer2D_nopool":
-
-        from piano_transcription.models.conformer2d_nopool import (Conformer2D,
-                                                            Conformer2DConfig)
-
-        config = Conformer2DConfig(
-            sr=configs["sample_rate"],
-            n_fft=configs["model"]["n_fft"],
-            hop_length=configs["model"]["hop_length"],
-        )
-
-        model = Conformer2D(config)
-
-    elif name == "Transformer":
-
-        from piano_transcription.models2.transformer import Transformer, Config
-
-        config = Config(**configs["model"])
-        model = Transformer(config)
-
-    elif name == "FlextokContinuous":
-
-        from piano_transcription.models2.flextok_continuous import FlextokContinuous, Config
-
-        config = Config(**configs["model"])
-        model = FlextokContinuous(config)
-
-    elif name == "FlextokContinuous2":
-
-        from piano_transcription.models2.flextok_continuous2 import FlextokContinuous, Config
-
-        config = Config(**configs["model"])
-        model = FlextokContinuous(config)
-
-    elif name == "FlextokFSQ":
-
-        from piano_transcription.models2.flextok_fsq import FlextokFSQ, Config
-
-        config = Config(**configs["model"])
-        model = FlextokFSQ(config)
-
-    elif name == "FlextokFSQ2":
-
-        from piano_transcription.models2.flextok_fsq2 import FlextokFSQ, Config
-
-        config = Config(**configs["model"])
-        model = FlextokFSQ(config)
+        model = Conformer2D_nopool_slakh(config)
 
     else:
         raise ValueError(name)    
@@ -242,7 +209,10 @@ def bce_loss(output_dict: dict, target_dict: dict) -> torch.float:
     frame_loss = F.binary_cross_entropy(output_dict["frame_roll"], target_dict["frame_roll"])
     onset_loss = F.binary_cross_entropy(output_dict["onset_roll"], target_dict["onset_roll"])
     offset_loss = F.binary_cross_entropy(output_dict["offset_roll"], target_dict["offset_roll"])
-    loss = frame_loss + onset_loss + offset_loss
+    drum_loss = F.binary_cross_entropy(output_dict["drum_roll"], target_dict["drum_roll"])
+    program_loss = F.binary_cross_entropy(output_dict["program_roll"], target_dict["program_roll"])
+
+    loss = frame_loss + onset_loss + offset_loss + drum_loss + program_loss
 
     return loss
 
@@ -267,38 +237,6 @@ def get_optimizer_and_scheduler(
         scheduler = None
 
     return optimizer, scheduler
-
-
-def validate(
-    configs,
-    model: nn.Module,
-    out_dir
-) -> float:
-    r"""Validate the model on part of data."""
-
-    audio_path = "./assets/cut_liszt.mp3"
-
-    sr = configs["sample_rate"]
-    clip_duration = configs["clip_duration"]
-    fps = configs["fps"]
-    clip_samples = round(clip_duration * sr)
-
-    audio, _ = librosa.load(path=audio_path, sr=sr, mono=True)
-    
-    # Foward
-    from inference import forward
-
-    out_path = Path(out_dir, "pred.pdf")
-    events = forward(model, audio, clip_samples, sr, fps, out_path)
-
-    # from IPython import embed; embed(using=False); os._exit(0)
-
-    # # Create directory
-    # Path(midi_path).parent.mkdir(parents=True, exist_ok=True)
-
-    # # Write out to MIDI
-    midi_path = Path(out_dir, "pred.mid")
-    write_midi(events, midi_path)
 
 '''
 def validate(

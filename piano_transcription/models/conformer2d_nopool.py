@@ -16,7 +16,7 @@ class Conformer2DConfig:
     sr: int = 16000
     n_fft: int = 2048
     hop_length: int = 160
-    block_size: int = 256
+    block_size: int = 1024
     enc_layers: int = 6
     dec_layers: int = 6
     n_head: int = 16
@@ -32,7 +32,7 @@ class Conformer2D(Fourier):
             normalized=True
         )
 
-        self.downsample_factor = 4
+        self.downsample_factor = 1
         self.pitches_num = 128
 
         self.mel_extractor = MelSpectrogram(
@@ -88,13 +88,11 @@ class Conformer2D(Fourier):
 
         # Encode
         x, pad_t = self.encode(audio)  # x: (b, t, d), 25 Hz continuous
-        
-        # Quantize here
-        pass
 
-        # Decode
-        frame_roll, onset_roll, offset_roll = self.decode(x, pad_t)  
-        # all shapes: (b, t, p)
+        x = F.sigmoid(self.post_fc(x))  # shape: (b, t, d)
+
+        x = rearrange(x, 'b t1 (m t2 p) -> m b (t1 t2) p', t2=self.downsample_factor, p=self.pitches_num)
+        frame_roll, onset_roll, offset_roll = x
 
         output = {
             "frame_roll": frame_roll,  # (b, t, p)
@@ -133,38 +131,12 @@ class Conformer2D(Fourier):
         x = rearrange(x, 'b c t f -> b t (c f)')  # shape: (b, t, d)
         x = self.pre_fc(x)  # shape: (b, t, d)
 
+        # from IPython import embed; embed(using=False); os._exit(0)
+
         for block in self.encoder_blocks:
             x = block(x, self.rope)  # shape: (b, t, d)
 
         return x, pad_t
-
-    def decode(self, x: torch.Tensor, pad_t: int):
-        r"""Decode.
-
-        b: batch_size
-        t1: frames num after down sampling, e.g., 251
-        f2: downsample factor, e.g., 4
-        d: latent_dim
-
-        Args:
-            x: (b, t, d)
-            pad_t: int
-
-        Outputs:
-            
-        """
-        for block in self.decoder_blocks:
-            x = block(x, self.rope)  # shape: (b, t, d)
-
-        x = F.sigmoid(self.post_fc(x))  # shape: (b, t, d)
-
-        x = rearrange(x, 'b t1 (m t2 p) -> m b (t1 t2) p', t2=self.downsample_factor, p=self.pitches_num)
-        # x: (3, b, t, p)
-
-        x = self.unpad_tensor(x, pad_t)  # shape: (3, b, t, p)
-
-        return x
-
 
     def pad_tensor(self, x: torch.Tensor) -> tuple[torch.Tensor, int]:
         """Pad a spectrum that can be evenly divided by downsample_ratio.
@@ -182,18 +154,134 @@ class Conformer2D(Fourier):
 
         return x, pad_t
 
-    def unpad_tensor(self, x: torch.Tensor, pad_t: int) -> torch.Tensor:
-        """Unpad a spectrum to the original shape.
-        
+
+class Conformer2D_nopool_slakh(Fourier):
+    def __init__(self, config: Conformer2DConfig):
+        super(Conformer2D_nopool_slakh, self).__init__(
+            n_fft=config.n_fft, 
+            hop_length=config.hop_length, 
+            return_complex=True, 
+            normalized=True
+        )
+
+        self.downsample_factor = 1
+        self.pitches_num = 128
+
+        self.mel_extractor = MelSpectrogram(
+            sample_rate=config.sr,
+            n_fft=config.n_fft,
+            hop_length=config.hop_length,
+            f_min=0.,
+            f_max=config.sr / 2,
+            n_mels=256,
+            power=2.0,
+            normalized=True,
+        )
+
+        self.conv1 = ConvBlock(in_channels=1, out_channels=32)
+        self.conv2 = ConvBlock(in_channels=32, out_channels=64)
+
+        self.pre_fc = nn.Linear(4096, 1024)
+
+        self.encoder_blocks = nn.ModuleList(Block(config) for _ in range(config.enc_layers))
+
+        self.post_fc = nn.Linear(1024, 5 * 128)
+
+        # Build RoPE cache
+        rope = build_rope(
+            seq_len=config.block_size,
+            head_dim=config.n_embd // config.n_head,
+        )  # shape: (t, head_dim/2, 2)
+        self.register_buffer(name="rope", tensor=rope)
+
+    def forward(self, audio: torch.Tensor) -> dict:
+        r"""Forward.
+
+        b: batch_size
+        c: channels_num
+        l: samples_num
+        t: frames_num
+        p: pitches_num
+
         Args:
-            x: E.g., (b, c, t=1004, f)
+            audio: (b, c, l)
+
+        Outputs:
+            output: dict
+        """
+
+        # Encode
+        x, pad_t = self.encode(audio)  # x: (b, t, d), 25 Hz continuous
+
+        x = F.sigmoid(self.post_fc(x))  # shape: (b, t, d)
+
+        frame_roll = x[:, :, 0 : 128]
+        onset_roll = x[:, :, 128 : 256]
+        offset_roll = x[:, :, 256 : 384]
+        drum_roll = x[:, :, 384: 512]
+        program_roll = x[:, :, 512:]
+
+        output = {
+            "frame_roll": frame_roll,  # (b, t, p)
+            "onset_roll": onset_roll,  # (b, t, p)
+            "offset_roll": offset_roll,  # (b, t, p)
+            "drum_roll": drum_roll,
+            "program_roll": program_roll
+        }
+
+        return output
+
+    def encode(self, audio: torch.Tensor) -> tuple[torch.Tensor, int]:
+        r"""Encode.
+
+        b: batch_size
+        c: channels_num
+        l: samples_num
+        t: frames_num
+        d: latent_dim
+
+        Args:
+            audio: (b, c, l)
+
+        Outputs:
+            x: (b, t, d)
+            pad_t: int
+        """
+
+        x = self.mel_extractor(audio)  # shape: (b, c, f, t)
+        x = rearrange(x, 'b c f t -> b c t f')  # shape: (b, c, t, f)
+
+        x, pad_t = self.pad_tensor(x)
+        x = torch.log10(torch.clamp(x, 1e-10))
+
+        x = self.conv1(x)  # shape: (b, c, t, f)
+        x = self.conv2(x)  # shape: (b, c, t, f)
+
+        x = rearrange(x, 'b c t f -> b t (c f)')  # shape: (b, t, d)
+        x = self.pre_fc(x)  # shape: (b, t, d)
+
+        # from IPython import embed; embed(using=False); os._exit(0)
+
+        for block in self.encoder_blocks:
+            x = block(x, self.rope)  # shape: (b, t, d)
+
+        return x, pad_t
+
+    def pad_tensor(self, x: torch.Tensor) -> tuple[torch.Tensor, int]:
+        """Pad a spectrum that can be evenly divided by downsample_ratio.
+
+        Args:
+            x: E.g., (b, c, t=1001, f)
         
         Outpus:
-            x: E.g., (b, c, t=1001, f)
+            output: E.g., (b, c, t=1004, f)
         """
-        x = x[:, :, 0 : -pad_t]
 
-        return x
+        T = x.shape[2]
+        pad_t = -T % self.downsample_factor
+        x = F.pad(x, pad=(0, 0, 0, pad_t))
+
+        return x, pad_t
 
 
 class ConvBlock(nn.Module):
@@ -220,7 +308,7 @@ class ConvBlock(nn.Module):
         """
 
         x = F.relu_(self.bn(self.conv(x)))
-        x = F.avg_pool2d(x, kernel_size=(2, 2))
+        x = F.avg_pool2d(x, kernel_size=(1, 2))
         
         return x 
 

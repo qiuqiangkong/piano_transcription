@@ -10,7 +10,7 @@ import torch
 import torch.nn as nn
 
 from piano_transcription.utils import parse_yaml, write_midi
-from train import get_model
+from train_slakh import get_model
 
 
 def inference(args) -> None:
@@ -35,12 +35,17 @@ def inference(args) -> None:
         ckpt_path=ckpt_path
     ).to(device)
 
+    if False:
+        x = torch.randn(1, 1, clip_samples).to(device)
+        traced_model = torch.jit.trace(model, x, strict=False)
+        traced_model.save("model_traced.pt")
+        from IPython import embed; embed(using=False); os._exit(0)
+
     # Load audio
     audio, _ = librosa.load(path=audio_path, sr=sr, mono=True)
     
     # Foward
-    out_path = "_zz.pdf"
-    events = forward(model, audio, clip_samples, sr, fps, out_path)
+    events = forward(model, audio, clip_samples, sr, fps)
 
     # Create directory
     Path(midi_path).parent.mkdir(parents=True, exist_ok=True)
@@ -54,8 +59,7 @@ def forward(
     audio: torch.Tensor, 
     clip_samples: int, 
     sr: float, 
-    fps: int,
-    out_path = None
+    fps: int
 ):
     r"""Split audio into clips. Inference the result on each clip. Concatenate 
     the results.
@@ -82,6 +86,8 @@ def forward(
         frame_roll = output_dict["frame_roll"][0].cpu().numpy()
         onset_roll = output_dict["onset_roll"][0].cpu().numpy()
         offset_roll = output_dict["offset_roll"][0].cpu().numpy()
+        drum_roll = output_dict["drum_roll"][0].cpu().numpy()
+        program_roll = output_dict["program_roll"][0].cpu().numpy()
 
         frame_rolls.append(frame_roll[0 : -1, :])  # (frames_num, pitches_num)
         onset_rolls.append(onset_roll[0 : -1, :])  # (frames_num, pitches_num)
@@ -89,8 +95,8 @@ def forward(
 
         start_sample += clip_samples
 
-        if out_path:
-            visualize_rolls(frame_roll, onset_roll, offset_roll, out_path)
+        if True:
+            visualize_rolls(frame_roll, onset_roll, offset_roll, drum_roll, program_roll)
 
     frame_roll = np.concatenate(frame_rolls, axis=0)  # (frames_num, pitches_num)
     onset_roll = np.concatenate(onset_rolls, axis=0)  # (frames_num, pitches_num)
@@ -131,15 +137,14 @@ def rolls_to_events(onset_roll: np.ndarray, fps: int) -> list[dict]:
     return events
 
 
-def visualize_rolls(frame_roll, onset_roll, offset_roll, out_path):
-    fig, axs = plt.subplots(3, 1, sharex=True)
+def visualize_rolls(frame_roll, onset_roll, offset_roll, drum_roll, program_roll):
+    fig, axs = plt.subplots(5, 1, sharex=True)
     axs[0].matshow(frame_roll.T, origin='lower', aspect='auto', cmap='jet')
     axs[1].matshow(onset_roll.T, origin='lower', aspect='auto', cmap='jet')
     axs[2].matshow(offset_roll.T, origin='lower', aspect='auto', cmap='jet')
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    plt.savefig(out_path)
-    print("Write out to {}".format(out_path))
-    # plt.savefig("_zz.pdf")
+    axs[3].matshow(drum_roll.T, origin='lower', aspect='auto', cmap='jet')
+    axs[4].matshow(program_roll.T, origin='lower', aspect='auto', cmap='jet')
+    plt.savefig("_zz.pdf")
     # from IPython import embed; embed(using=False); os._exit(0)
 
 
